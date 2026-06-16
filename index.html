@@ -1,14 +1,16 @@
 <!DOCTYPE html>
-<!-- Drug, Dragon, or Pokémon — Biopsy v1
+<!-- Drug, Dragon or Pokémon — Biopsy v2
      Static site for GitHub Pages. Big screen = host (open the bare URL).
      Phones join via ?room=CODE (the QR code points here).
-     Needs: names.txt, DDP.xlsx, and wutdis.txt in the same folder, and your Firebase config below.
+     Needs in the repo root: names.txt, wutdis.txt, tips.txt, and your Firebase config below.
+     Question data is read live from a public Google Sheet (SHEET_ID constant).
+     Optional: drop roar.mp3 in root for a real dragon roar on score reveal.
      Preview the look without Firebase: open with ?demo=host or ?demo=phone -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Drug, Dragon, or Pokémon</title>
+<title>Drug, Dragon or Pokémon</title>
 
 <!-- ===== Third-party libs (CDN, loaded as classic globals: XLSX, QRCode) ===== -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -157,6 +159,23 @@ h1,h2,h3,.display{font-family:'Lilita One',cursive;font-weight:400;letter-spacin
 .scoreboard .right .pts{margin-left:0;min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
 .scoreboard .delta{font-family:'Lilita One';color:var(--ok);font-size:16px}
 
+/* rounds stepper on the launch screen */
+.rounds{display:flex;align-items:center;justify-content:center;gap:14px}
+.rounds .step{font-family:'Lilita One';width:46px;height:46px;border-radius:12px;border:none;cursor:pointer;font-size:26px;color:#fff;
+  background:linear-gradient(#6b6bf0,#454bb0);box-shadow:0 5px 0 rgba(0,0,0,.28);line-height:1}
+.rounds .step:active{transform:translateY(3px);box-shadow:0 2px 0 rgba(0,0,0,.28)}
+.rounds .step[disabled]{filter:grayscale(.6) brightness(.7);cursor:not-allowed}
+.rounds-val{display:flex;flex-direction:column;align-items:center;min-width:84px}
+.rounds-val b{font-family:'Lilita One';font-size:40px;line-height:1;color:var(--gold1)}
+.rounds-val small{font-weight:900;opacity:.6;text-transform:uppercase;letter-spacing:1px;font-size:12px}
+
+/* tips ticker */
+.tips{display:flex;align-items:center;gap:12px;max-width:680px;margin-top:6px;background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:12px 18px}
+.tips-label{font-family:'Lilita One';background:linear-gradient(var(--dragon),var(--dragon2));color:#fff;
+  padding:4px 12px;border-radius:8px;font-size:14px;flex:none}
+.tips-text{font-weight:700;line-height:1.4;transition:opacity .3s}
+
 /* points popup on phone */
 .score-flash{font-family:'Lilita One';font-size:clamp(40px,12vw,80px);color:var(--gold1);text-shadow:0 3px 0 rgba(0,0,0,.35)}
 
@@ -218,8 +237,8 @@ const firebaseConfig = {
   appId: "1:577951001199:web:f9e7b65e96357edeb0fb9a"
 };
 
-const VERSION = "Biopsy v1";
-const ROUNDS = 3;
+const VERSION = "Biopsy v2";
+let ROUNDS = 3;            // host can change this on the launch screen
 const CONFIG_READY = !firebaseConfig.apiKey.startsWith("PASTE");
 
 /* ---------- tiny helpers ---------- */
@@ -247,7 +266,7 @@ const CAT_CLASS = {drug:"drug", dragon:"dragon", pokemon:"poke"};
 const labelsFor = set => set.size===0 ? [["None of them","none"]] : [...set].map(c=>[CAT_LABEL[c],CAT_CLASS[c]]);
 
 const logo = () => $("div",{class:"logo"},
-  $("div",{class:"ddp",html:'<b>Drug</b>, <i>Dragon</i>, or <u>Pokémon</u>'}));
+  $("div",{class:"ddp",html:'<b>Drug</b>, <i>Dragon</i> or <u>Pokémon</u>'}));
 
 // quick count-up animation for score totals (easeOutCubic)
 function animateCount(node, from, to, ms=850){
@@ -261,6 +280,105 @@ function animateCount(node, from, to, ms=850){
     if(t<1) requestAnimationFrame(step); else node.textContent = String(to);
   };
   requestAnimationFrame(step);
+}
+
+/* ---------- celebration: dragon roar + confetti + falling pills ---------- */
+let audioCtx = null, audioUnlocked = false;
+function unlockAudio(){
+  audioUnlocked = true;
+  try{ audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)(); audioCtx.resume(); }catch(_){}
+}
+["pointerdown","keydown","touchstart"].forEach(ev =>
+  window.addEventListener(ev, unlockAudio, {once:true, passive:true}));
+
+function dragonRoar(){
+  // Prefer a real roar.mp3 if the host dropped one in root; otherwise synthesize.
+  try{
+    const a = new Audio("roar.mp3"); a.volume = 0.9;
+    a.play().then(()=>dbg.info("Playing roar.mp3")).catch(()=> synthRoar());
+  }catch(_){ synthRoar(); }
+}
+function synthRoar(){
+  try{
+    const ctx = audioCtx || new (window.AudioContext||window.webkitAudioContext)(); audioCtx = ctx; ctx.resume();
+    const t0 = ctx.currentTime, dur = 1.6;
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, t0);
+    master.gain.exponentialRampToValueAtTime(0.9, t0+0.08);
+    master.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
+    master.connect(ctx.destination);
+    // growly low sawtooth with a downward pitch sweep
+    const osc = ctx.createOscillator(); osc.type="sawtooth";
+    osc.frequency.setValueAtTime(150, t0);
+    osc.frequency.exponentialRampToValueAtTime(55, t0+dur*0.7);
+    const lp = ctx.createBiquadFilter(); lp.type="lowpass";
+    lp.frequency.setValueAtTime(900, t0); lp.frequency.exponentialRampToValueAtTime(220, t0+dur);
+    // tremolo for the "rrrr" texture
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 28;
+    const lfoGain = ctx.createGain(); lfoGain.gain.value = 0.4;
+    lfo.connect(lfoGain); lfoGain.connect(master.gain);
+    // breath/noise layer
+    const nb = ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
+    const nd = nb.getChannelData(0); for(let i=0;i<nd.length;i++) nd[i]=(Math.random()*2-1)*0.5;
+    const noise = ctx.createBufferSource(); noise.buffer=nb;
+    const nf = ctx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=400; nf.Q.value=0.7;
+    osc.connect(lp); lp.connect(master); noise.connect(nf); nf.connect(master);
+    osc.start(t0); lfo.start(t0); noise.start(t0);
+    osc.stop(t0+dur); lfo.stop(t0+dur); noise.stop(t0+dur);
+    dbg.info("Played synthesized roar");
+  }catch(e){ dbg.warn("Roar audio blocked (needs a click on the host page first): "+e.message); }
+}
+
+function celebrate(){
+  dragonRoar();
+  const cv = document.createElement("canvas");
+  cv.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:9000";
+  document.body.appendChild(cv);
+  const ctx = cv.getContext("2d");
+  const dpr = Math.min(2, window.devicePixelRatio||1);
+  const resize = () => { cv.width=innerWidth*dpr; cv.height=innerHeight*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); };
+  resize();
+  const colors = ["#9b59d0","#f3902f","#ef4655","#f7d774","#3ddc84","#5b8cff"];
+  const N = 120;
+  const parts = Array.from({length:N},()=>{
+    const pill = Math.random()<0.32;
+    return {
+      x: Math.random()*innerWidth, y: -20 - Math.random()*innerHeight*0.5,
+      vx: (Math.random()-0.5)*1.4, vy: 2+Math.random()*3.2,
+      rot: Math.random()*Math.PI, vr:(Math.random()-0.5)*0.3,
+      size: pill ? 14+Math.random()*10 : 7+Math.random()*7,
+      color: colors[(Math.random()*colors.length)|0], pill
+    };
+  });
+  const start = performance.now(), life = 3800;
+  (function frame(now){
+    const t = now-start;
+    ctx.clearRect(0,0,innerWidth,innerHeight);
+    for(const p of parts){
+      p.x+=p.vx; p.y+=p.vy; p.vy+=0.04; p.rot+=p.vr;
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+      if(p.pill){
+        // two-tone capsule = a "pill"
+        const w=p.size, h=p.size*0.46, r=h/2;
+        ctx.fillStyle="#fff";
+        roundRect(ctx,-w/2,-h/2,w,h,r); ctx.fill();
+        ctx.fillStyle=p.color;
+        ctx.save(); ctx.beginPath(); roundRect(ctx,-w/2,-h/2,w,h,r); ctx.clip();
+        ctx.fillRect(-w/2,-h/2,w/2,h); ctx.restore();
+        ctx.lineWidth=1.2; ctx.strokeStyle="rgba(0,0,0,.25)"; roundRect(ctx,-w/2,-h/2,w,h,r); ctx.stroke();
+      } else {
+        ctx.fillStyle=p.color; ctx.fillRect(-p.size/2,-p.size/2,p.size,p.size*0.6);
+      }
+      ctx.restore();
+    }
+    if(t<life) requestAnimationFrame(frame); else cv.remove();
+  })(start);
+  addEventListener("resize", resize, {once:true});
+}
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
 }
 
 const loading = (msg="Loading…") => mount(logo(), $("div",{class:"spinner"}), $("div",{class:"muted"},msg));
@@ -381,11 +499,39 @@ async function loadNames(){
   dbg.ok("names.txt loaded", {count:list.length});
   return list;
 }
+// Public Google Sheet holding the Drug / Dragon / Pokemon / None columns.
+// "Anyone with the link can view" is enough — we read it as CSV from the client.
+const SHEET_ID = "14QRBIEfRulcKwJziFtSzBcg2O-Wkg5-t3fYx2r_r1mI";
+const SHEET_URLS = [
+  "https://docs.google.com/spreadsheets/d/"+SHEET_ID+"/gviz/tq?tqx=out:csv",
+  "https://docs.google.com/spreadsheets/d/"+SHEET_ID+"/export?format=csv"
+];
+async function fetchSheetCsv(){
+  let lastErr;
+  for(const url of SHEET_URLS){
+    try{
+      const r = await fetch(url, {cache:"no-store"});
+      if(!r.ok){ dbg.warn("Sheet fetch HTTP "+r.status); lastErr=new Error("HTTP "+r.status); continue; }
+      const text = await r.text();
+      const head = text.slice(0,200).toLowerCase();
+      if(head.includes("<!doctype") || head.includes("<html")){   // got a sign-in / error page, not CSV
+        dbg.warn("Sheet returned HTML, not CSV (likely needs Publish-to-web)"); lastErr=new Error("got HTML not CSV"); continue;
+      }
+      if(text && text.length>1) return text;
+    }catch(e){ dbg.warn("Sheet fetch blocked: "+e.message); lastErr=e; }
+  }
+  throw lastErr || new Error("Could not read the Google Sheet");
+}
 async function loadSheet(){
   if(!window.XLSX){ dbg.err("XLSX library not loaded — the SheetJS CDN may be blocked"); throw new Error("XLSX missing"); }
-  const r = await fetch("DDP.xlsx", {cache:"no-store"});
-  if(!r.ok){ dbg.err("DDP.xlsx failed to load (HTTP "+r.status+")", {status:r.status}); throw new Error("DDP.xlsx not found"); }
-  const wb = XLSX.read(await r.arrayBuffer(), {type:"array"});
+  let csv;
+  try{ csv = await fetchSheetCsv(); }
+  catch(e){
+    dbg.err("Google Sheet could not be read — check it's shared 'Anyone with the link can view'. "+
+            "If CORS blocks it, use File → Share → Publish to web → CSV and swap that URL in. ("+e.message+")", {sheet:SHEET_ID});
+    throw e;
+  }
+  const wb = XLSX.read(csv, {type:"string"});
   const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1});
   const map = new Map(); // displayName -> Set(categories)
   const add = (val, cat) => {
@@ -393,10 +539,21 @@ async function loadSheet(){
     if(!map.has(name)) map.set(name,new Set());
     if(cat) map.get(name).add(cat);
   };
+  // columns: A=Drug, B=Dragon, C=Pokemon, D=None. A name in two columns of one row = a Double.
   for(let i=1;i<rows.length;i++){ const row=rows[i]||[];
     add(row[0],"drug"); add(row[1],"dragon"); add(row[2],"pokemon"); add(row[3],null); }
-  dbg.ok("DDP.xlsx parsed", {candidates:map.size});
+  const doubles = [...map.values()].filter(s=>s.size>=2).length;
+  dbg.ok("Google Sheet parsed", {candidates:map.size, doubles});
   return map; // keys() = every candidate name
+}
+async function loadTips(){
+  try{
+    const r = await fetch("tips.txt", {cache:"no-store"});
+    if(!r.ok){ dbg.warn("tips.txt not found (HTTP "+r.status+")"); return []; }
+    const lines = (await r.text()).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    dbg.ok("tips.txt loaded", {count:lines.length});
+    return lines;
+  }catch(e){ dbg.warn("tips.txt load error: "+e.message); return []; }
 }
 async function loadWutdis(){
   const fallback = ["What is this?","Any guesses?","Wut dis?"];
@@ -434,12 +591,16 @@ function nameCard(name){
 /* =========================================================================
    HOST RENDERERS  (the big screen)
    ========================================================================= */
-function renderHostLobby({code, url, players}){
+function renderHostLobby({code, url, players, rounds, maxRounds, onRounds, tip}){
   const arr = Object.values(players||{});
   const qr = $("div",{class:"qrbox", id:"qr"});
   const chips = arr.length
     ? arr.map(p=>$("div",{class:"chip"+(p.accepted?" ok":"")}, $("span",{class:"tick"}, p.accepted?"✓":"…"), p.name))
     : [$("div",{class:"muted"},"Waiting for players to scan in…")];
+  const stepper = $("div",{class:"rounds"},
+    $("button",{class:"step", "aria-label":"Fewer rounds", disabled:(rounds<=1?"":null), onClick:()=>onRounds(rounds-1)},"−"),
+    $("div",{class:"rounds-val"}, $("b",{},String(rounds)), $("small",{}, rounds===1?"round":"rounds")),
+    $("button",{class:"step", "aria-label":"More rounds", disabled:(rounds>=maxRounds?"":null), onClick:()=>onRounds(rounds+1)},"+"));
   mount(
     logo(),
     $("div",{class:"host-grid"},
@@ -451,8 +612,11 @@ function renderHostLobby({code, url, players}){
       $("div",{class:"panel center"},
         $("div",{class:"count",html:`${arr.length} <small>player${arr.length===1?"":"s"} in</small>`}),
         $("div",{class:"players",style:"margin:14px 0"}, ...chips),
-        $("div",{class:"muted"}, arr.length? "Starts when everyone hits Accept." : "Names come from names.txt"))
-    )
+        $("div",{class:"eyebrow",style:"margin-bottom:8px"},"How many rounds?"),
+        stepper,
+        $("div",{class:"muted",style:"margin-top:10px"}, arr.length? "Starts when everyone hits Accept." : "Names come from names.txt"))
+    ),
+    $("div",{class:"tips"}, $("span",{class:"tips-label"},"Tip"), $("span",{id:"tip", class:"tips-text"}, tip||""))
   );
   if (window.QRCode) new QRCode(qr, {text:url, width:208, height:208, colorDark:"#1a1430", colorLight:"#ffffff"});
 }
@@ -493,6 +657,7 @@ function renderHostReveal({round, name, correctLabels, scoreRows, isLast, onNext
     $("button",{class:"btn",onClick:onNext}, isLast? "See final scores ▸" : "Next round ▸")
   );
   tasks.forEach(f=>f());
+  celebrate();
 }
 function renderHostEnded({leaderboard}){
   const rows = leaderboard.map((p,i)=>$("div",{class:"row"+(i===0?" first":"")},
@@ -589,7 +754,7 @@ async function runHost(){
   loading("Setting up the table…");
   dbg.set("mode","HOST");
   await initFirebase();
-  const [nameMap, wutdis] = await Promise.all([loadSheet(), loadWutdis(), loadNames().catch(()=>[])]); // host needs sheet + prompts
+  const [nameMap, wutdis, tips] = await Promise.all([loadSheet(), loadWutdis(), loadTips(), loadNames().catch(()=>[])]); // host needs sheet + prompts + tips
   const code = roomCode();
   const url = location.origin + location.pathname + "?room=" + code;
   dbg.set("room", code);
@@ -603,10 +768,17 @@ async function runHost(){
   }
   onDisconnect(roomRef).remove();   // tidy the room up when the host screen closes
 
-  // pick this game's mystery names + remember their correct sets (host-side only)
-  const candidates = shuffle([...nameMap.keys()]).slice(0, ROUNDS);
-  while(candidates.length < ROUNDS && nameMap.size) candidates.push(candidates[candidates.length-1]); // fallback if tiny sheet
-  dbg.info("Mystery names chosen for this game", {candidates});
+  const maxRounds = Math.max(1, Math.min(20, nameMap.size));   // can't have more rounds than candidate names
+  ROUNDS = Math.min(ROUNDS, maxRounds);                        // host-chosen, starts at the default
+  let candidates = [];                                         // picked when the game actually starts
+  dbg.info("Sheet ready", {candidates:nameMap.size, maxRounds});
+
+  // tips ticker — cycles every 5s while the launch screen is up
+  let tipIdx = 0, currentTip = tips[0] || "";
+  if(tips.length>1) setInterval(()=>{
+    const el = document.getElementById("tip");
+    if(el){ tipIdx=(tipIdx+1)%tips.length; currentTip=tips[tipIdx]; el.textContent=currentTip; }
+  }, 5000);
 
   let players = {};        // live snapshot
   let roster = [];         // uids frozen at game start
@@ -614,10 +786,15 @@ async function runHost(){
   let started = false;
   const revealed = new Set();
 
+  const drawLobby = () => renderHostLobby({
+    code, url, players, rounds:ROUNDS, maxRounds, tip:currentTip,
+    onRounds:(n)=>{ ROUNDS = Math.max(1, Math.min(maxRounds, n)); dbg.info("Rounds set to "+ROUNDS); drawLobby(); }
+  });
+
   onValue(ref(db,"rooms/"+code+"/players"), snap=>{
     players = snap.val()||{};
     if(state==="lobby"){
-      renderHostLobby({code, url, players});
+      drawLobby();
       const arr = Object.values(players);
       if(!started && arr.length>=1 && arr.every(p=>p.accepted)) startGame();
     }
@@ -626,7 +803,11 @@ async function runHost(){
   function startGame(){
     started = true; state = "question";
     roster = Object.keys(players);
-    dbg.info("All players accepted — starting game", {roster:roster.length});
+    // pick this game's mystery names now that the round count is locked (host-side only)
+    candidates = shuffle([...nameMap.keys()]).slice(0, ROUNDS);
+    while(candidates.length < ROUNDS && nameMap.size) candidates.push(candidates[candidates.length-1]);
+    update(roomRef, { "meta/rounds": ROUNDS });
+    dbg.info("All players accepted — starting game", {roster:roster.length, rounds:ROUNDS, candidates});
     dbg.set("roster", roster.length);
     beginRound(0);
   }
@@ -653,7 +834,8 @@ async function runHost(){
     dbg.set("gameState", "reveal r"+r);
     const correctSet = nameMap.get(name) || new Set();
     const correctLabels = labelsFor(correctSet);
-    const base = 100 * Math.max(1, correctSet.size);
+    // Doubles (name in two columns, e.g. Charizard = dragon + pokemon) are worth 400. Singles & "none" are 100.
+    const base = correctSet.size >= 2 ? 400 : 100;
     // who was exactly right, ordered by submit time → bonuses
     const correct = roster.filter(u=>ans[u] && setsEqual(new Set(ans[u].picks||[]), correctSet))
                           .sort((a,b)=>(ans[a].at||0)-(ans[b].at||0));
@@ -789,11 +971,12 @@ function runDemo(kind){
   if(kind==="host"){
     screens = [
       ()=>renderHostLobby({code:"WXYZ", url:location.origin+location.pathname+"?room=WXYZ",
-        players:{a:{name:"Captain Wiggles",accepted:true}, b:{name:"Old Greg",accepted:true}, c:{name:"Susan Doom",accepted:false}}}),
+        players:{a:{name:"Captain Wiggles",accepted:true}, b:{name:"Old Greg",accepted:true}, c:{name:"Susan Doom",accepted:false}},
+        rounds:3, maxRounds:10, onRounds:()=>{}, tip:"Doubles are worth 400 points. Singles are worth 100."}),
       ()=>renderHostQuestion({round:0, name:"Charizard", prompt:"Is your Mom taking this?", answered:2, total:3}),
       ()=>renderHostReveal({round:0, name:"Charizard",
         correctLabels:[["Dragon","dragon"],["Pokémon","poke"]],
-        scoreRows:[{name:"Old Greg",old:225,new:475,delta:250},{name:"Captain Wiggles",old:125,new:350,delta:225},{name:"Susan Doom",old:100,new:100,delta:0}],
+        scoreRows:[{name:"Old Greg",old:125,new:575,delta:450},{name:"Captain Wiggles",old:100,new:525,delta:425},{name:"Susan Doom",old:200,new:200,delta:0}],
         isLast:false, onNext:next}),
       ()=>renderHostQuestion({round:1, name:"Ozempic", prompt:"Any guesses?", answered:1, total:3}),
       ()=>renderHostEnded({leaderboard:[{name:"Old Greg",score:475},{name:"Captain Wiggles",score:350},{name:"Susan Doom",score:100}]})
