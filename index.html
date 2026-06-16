@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<!-- Drug, Dragon, or Pokémon — v1
+<!-- Drug, Dragon, or Pokémon — Biopsy v1
      Static site for GitHub Pages. Big screen = host (open the bare URL).
      Phones join via ?room=CODE (the QR code points here).
-     Needs: names.txt and DDP.xlsx in the same folder, and your Firebase config below.
+     Needs: names.txt, DDP.xlsx, and wutdis.txt in the same folder, and your Firebase config below.
      Preview the look without Firebase: open with ?demo=host or ?demo=phone -->
 <html lang="en">
 <head>
@@ -147,6 +147,16 @@ h1,h2,h3,.display{font-family:'Lilita One',cursive;font-weight:400;letter-spacin
 .row.first{background:linear-gradient(120deg,rgba(247,215,116,.28),rgba(224,165,42,.18));border-color:var(--gold2)}
 .row.first .rank{color:var(--gold1);opacity:1}
 
+/* reveal: name beside the answer + animated running totals */
+.reveal-answer{display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:center;text-align:center}
+.reveal-name{font-family:'Lilita One';font-size:clamp(30px,6.5vw,56px);text-shadow:0 3px 0 rgba(0,0,0,.35)}
+.reveal-was{font-family:'Nunito';font-weight:900;opacity:.6;text-transform:uppercase;letter-spacing:2px;font-size:14px}
+.scoreboard{width:min(94vw,560px)}
+.scoreboard .pname{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scoreboard .right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.scoreboard .right .pts{margin-left:0;min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
+.scoreboard .delta{font-family:'Lilita One';color:var(--ok);font-size:16px}
+
 /* points popup on phone */
 .score-flash{font-family:'Lilita One';font-size:clamp(40px,12vw,80px);color:var(--gold1);text-shadow:0 3px 0 rgba(0,0,0,.35)}
 
@@ -208,6 +218,7 @@ const firebaseConfig = {
   appId: "1:577951001199:web:f9e7b65e96357edeb0fb9a"
 };
 
+const VERSION = "Biopsy v1";
 const ROUNDS = 3;
 const CONFIG_READY = !firebaseConfig.apiKey.startsWith("PASTE");
 
@@ -236,8 +247,21 @@ const CAT_CLASS = {drug:"drug", dragon:"dragon", pokemon:"poke"};
 const labelsFor = set => set.size===0 ? [["None of them","none"]] : [...set].map(c=>[CAT_LABEL[c],CAT_CLASS[c]]);
 
 const logo = () => $("div",{class:"logo"},
-  $("div",{class:"ddp",html:'<b>Drug</b>, <i>Dragon</i>, or <u>Pokémon</u>'}),
-  $("div",{class:"sub"},"Wut dis?"));
+  $("div",{class:"ddp",html:'<b>Drug</b>, <i>Dragon</i>, or <u>Pokémon</u>'}));
+
+// quick count-up animation for score totals (easeOutCubic)
+function animateCount(node, from, to, ms=850){
+  from = Number(from)||0; to = Number(to)||0;
+  if(from===to){ node.textContent=String(to); return; }
+  const start = performance.now();
+  const step = now => {
+    const t = Math.min(1,(now-start)/ms);
+    const e = 1 - Math.pow(1-t,3);
+    node.textContent = String(Math.round(from + (to-from)*e));
+    if(t<1) requestAnimationFrame(step); else node.textContent = String(to);
+  };
+  requestAnimationFrame(step);
+}
 
 const loading = (msg="Loading…") => mount(logo(), $("div",{class:"spinner"}), $("div",{class:"muted"},msg));
 
@@ -248,6 +272,7 @@ const loading = (msg="Loading…") => mount(logo(), $("div",{class:"spinner"}), 
 const dbg = (() => {
   const logs = [];
   const state = {
+    version:VERSION,
     mode:"—", room:"—", uid:"—", connected:"—", gameState:"lobby",
     configReady:String(typeof CONFIG_READY!=="undefined" && CONFIG_READY),
     online:String(navigator.onLine), XLSX:String(!!window.XLSX), QRCode:String(!!window.QRCode),
@@ -373,15 +398,25 @@ async function loadSheet(){
   dbg.ok("DDP.xlsx parsed", {candidates:map.size});
   return map; // keys() = every candidate name
 }
+async function loadWutdis(){
+  const fallback = ["What is this?","Any guesses?","Wut dis?"];
+  try{
+    const r = await fetch("wutdis.txt", {cache:"no-store"});
+    if(!r.ok){ dbg.warn("wutdis.txt not found (HTTP "+r.status+") — using defaults"); return fallback; }
+    const lines = (await r.text()).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    dbg.ok("wutdis.txt loaded", {count:lines.length});
+    return lines.length ? lines : fallback;
+  }catch(e){ dbg.warn("wutdis.txt load error — using defaults ("+e.message+")"); return fallback; }
+}
 
 /* =========================================================================
    SHARED CARD RENDERERS
    ========================================================================= */
-function mysteryCard(name, footer){
+function mysteryCard(name, prompt, footer){
   return $("div",{class:"card big"},
     $("div",{class:"card-inner"},
       $("div",{class:"card-top"},
-        $("div",{class:"card-name"},"Wut dis?"),
+        $("div",{class:"card-name"}, prompt || "What is this?"),
         $("div",{class:"card-hp",html:'? <small>HP</small>'})),
       $("div",{class:"art"}, $("div",{class:"mystery"}, name)),
       $("div",{class:"card-foot"}, footer||"Drug · Dragon · Pokémon · or none of them?")));
@@ -421,31 +456,43 @@ function renderHostLobby({code, url, players}){
   );
   if (window.QRCode) new QRCode(qr, {text:url, width:208, height:208, colorDark:"#1a1430", colorLight:"#ffffff"});
 }
-function renderHostQuestion({round, name, answered, total}){
+function renderHostQuestion({round, name, prompt, answered, total}){
   const pips = Array.from({length:total},(_,i)=>$("div",{class:"pip"+(i<answered?" on":"")}));
   mount(
     $("div",{class:"eyebrow"},`Round ${round+1} of ${ROUNDS}`),
-    mysteryCard(name),
+    mysteryCard(name, prompt),
     $("div",{class:"panel center"},
       $("div",{class:"count",html:`${answered}/${total} <small>answered</small>`}),
       $("div",{class:"pips",style:"margin-top:12px"}, ...pips))
   );
 }
-function renderHostReveal({round, name, correctLabels, scoredRows, isLast, onNext}){
+function renderHostReveal({round, name, correctLabels, scoreRows, isLast, onNext}){
   const tags = correctLabels.map(([lbl,cls])=>$("div",{class:"tag "+cls}, lbl));
-  const rows = scoredRows.length
-    ? scoredRows.map(r=>$("div",{class:"row"+(r.points>0?"":" muted")},
-        $("span",{class:"rank"}, r.points>0?"✓":"—"), r.name,
-        $("span",{class:"pts"}, (r.points>0?"+":"")+r.points)))
+  const tasks = [];
+  const rows = scoreRows.length
+    ? scoreRows.map((p,i)=>{
+        const num = $("span",{class:"pts"}, String(p.old));
+        tasks.push(()=>animateCount(num, p.old, p.new));
+        return $("div",{class:"row"+(i===0?" first":"")},
+          $("span",{class:"rank"}, i===0?"🏆":String(i+1)),
+          $("span",{class:"pname"}, p.name),
+          $("span",{class:"right"},
+            ...(p.delta>0 ? [$("span",{class:"delta"}, "+"+p.delta)] : []),
+            num));
+      })
     : [$("div",{class:"muted"},"No answers.")];
   mount(
-    $("div",{class:"eyebrow"},`Round ${round+1} — the answer is`),
-    mysteryCard(name, "Correct answer below"),
-    $("div",{class:"panel center"},
-      $("div",{class:"answer-tags",style:"margin-bottom:14px"}, ...tags),
-      $("div",{class:"board"}, ...rows)),
+    $("div",{class:"eyebrow"},`Round ${round+1} of ${ROUNDS}`),
+    // the name sits right next to the Drug/Dragon/Pokémon answer
+    $("div",{class:"reveal-answer"},
+      $("span",{class:"reveal-name"}, name),
+      $("span",{class:"reveal-was"}, "is"),
+      $("div",{class:"answer-tags"}, ...tags)),
+    // running totals where the card used to be
+    $("div",{class:"board scoreboard"}, ...rows),
     $("button",{class:"btn",onClick:onNext}, isLast? "See final scores ▸" : "Next round ▸")
   );
+  tasks.forEach(f=>f());
 }
 function renderHostEnded({leaderboard}){
   const rows = leaderboard.map((p,i)=>$("div",{class:"row"+(i===0?" first":"")},
@@ -473,7 +520,7 @@ function renderPhoneLobby({name, accepted, onRefresh, onAccept}){
       $("button",{class:"submit",style:"width:auto;padding:14px 26px",onClick:onAccept},"Accept ✓"))
   );
 }
-function renderPhoneQuestion({round, name, picks, locked, onToggle, onSubmit}){
+function renderPhoneQuestion({round, name, prompt, picks, locked, onToggle, onSubmit}){
   const mk = (cat) => {
     const cls = CAT_CLASS[cat];
     const on = picks.has(cat);
@@ -481,7 +528,7 @@ function renderPhoneQuestion({round, name, picks, locked, onToggle, onSubmit}){
       onClick:()=>onToggle(cat)}, $("span",{class:"dot"}, on?"✓":""), CAT_LABEL[cat]);
   };
   mount(
-    $("div",{class:"eyebrow"},`Round ${round+1} · Wut dis?`),
+    $("div",{class:"eyebrow"},`Round ${round+1} · ${prompt || "What is this?"}`),
     $("div",{class:"display",style:"font-size:clamp(30px,9vw,52px);text-align:center"}, name),
     $("div",{class:"badges"}, mk("drug"), mk("dragon"), mk("pokemon")),
     $("button",{class:"submit",disabled:locked?"":null,onClick:onSubmit},
@@ -490,12 +537,12 @@ function renderPhoneQuestion({round, name, picks, locked, onToggle, onSubmit}){
       locked? "Waiting for the round to end…" : "Pick all that apply. Charizard is two things…")
   );
 }
-function renderPhoneReveal({correctLabels, gotIt, points, total}){
+function renderPhoneReveal({name, correctLabels, gotIt, points, total}){
   const tags = correctLabels.map(([lbl,cls])=>$("div",{class:"tag "+cls}, lbl));
   mount(
     $("div",{class:"eyebrow"}, gotIt? "Nailed it" : "Not quite"),
     $("div",{class:"score-flash"}, gotIt? `+${points}` : "+0"),
-    $("div",{class:"muted"},"It was:"),
+    $("div",{class:"muted"}, (name? name+" is:" : "It was:")),
     $("div",{class:"answer-tags"}, ...tags),
     $("div",{class:"panel center",style:"margin-top:6px"},
       $("div",{class:"count",html:`${total} <small>total points</small>`}))
@@ -542,7 +589,7 @@ async function runHost(){
   loading("Setting up the table…");
   dbg.set("mode","HOST");
   await initFirebase();
-  const [nameMap] = await Promise.all([loadSheet(), loadNames().catch(()=>[])]); // host only needs the sheet
+  const [nameMap, wutdis] = await Promise.all([loadSheet(), loadWutdis(), loadNames().catch(()=>[])]); // host needs sheet + prompts
   const code = roomCode();
   const url = location.origin + location.pathname + "?room=" + code;
   dbg.set("room", code);
@@ -586,16 +633,17 @@ async function runHost(){
 
   function beginRound(r){
     const name = candidates[r];
-    dbg.info("Round "+(r+1)+" begins", {name});
+    const prompt = wutdis[(Math.random()*wutdis.length)|0];
+    dbg.info("Round "+(r+1)+" begins", {name, prompt});
     dbg.set("gameState", "question r"+r);
-    update(roomRef, { "meta/state":"question", "meta/round":r, "meta/name":name,
+    update(roomRef, { "meta/state":"question", "meta/round":r, "meta/name":name, "meta/prompt":prompt,
                       "meta/roundStartAt":serverTimestamp(), "meta/reveal":null })
       .catch(e=>dbg.err("beginRound write failed: "+e.message,{code:e.code}));
-    renderHostQuestion({round:r, name, answered:0, total:roster.length});
+    renderHostQuestion({round:r, name, prompt, answered:0, total:roster.length});
     onValue(ref(db,"rooms/"+code+"/answers/"+r), snap=>{
       const ans = snap.val()||{};
       const answered = roster.filter(u=>ans[u]).length;
-      if(state==="question") renderHostQuestion({round:r, name, answered, total:roster.length});
+      if(state==="question") renderHostQuestion({round:r, name, prompt, answered, total:roster.length});
       if(answered>=roster.length && roster.length>0) revealRound(r, ans, name);
     });
   }
@@ -613,6 +661,9 @@ async function runHost(){
     const pointsByUid = {};
     correct.forEach((u,i)=> pointsByUid[u] = base + (bonus[i]||0));
     dbg.info("Scoring round "+(r+1), {name, correct:[...correctSet], exactlyRight:correct.length, base});
+    // snapshot totals BEFORE the increment write so the scoreboard can count up
+    const oldTotals = {};
+    roster.forEach(u => oldTotals[u] = players[u]?.score || 0);
     const updates = { "meta/state":"reveal", "meta/reveal":{ name, correctLabels } };
     roster.forEach(u=>{
       const pts = pointsByUid[u]||0;
@@ -621,9 +672,11 @@ async function runHost(){
     });
     try{ await update(roomRef, updates); }
     catch(e){ dbg.err("Score write failed (host write permission?): "+e.message, {code:e.code}); }
-    const scoredRows = roster.map(u=>({name:players[u]?.name||"???", points:pointsByUid[u]||0}))
-                             .sort((a,b)=>b.points-a.points);
-    renderHostReveal({ round:r, name, correctLabels, scoredRows, isLast:r+1>=ROUNDS,
+    const scoreRows = roster.map(u=>{
+        const delta = pointsByUid[u]||0;
+        return { name:players[u]?.name||"???", old:oldTotals[u], new:oldTotals[u]+delta, delta };
+      }).sort((a,b)=> b.new-a.new || b.delta-a.delta);
+    renderHostReveal({ round:r, name, correctLabels, scoreRows, isLast:r+1>=ROUNDS,
       onNext: ()=> r+1>=ROUNDS ? endGame() : (state="question", beginRound(r+1)) });
   }
 
@@ -655,8 +708,9 @@ async function runPlayer(code){
     const s = await get(ref(db,"rooms/"+code+"/players"));
     return new Set(Object.entries(s.val()||{}).filter(([k])=>k!==uid).map(([,v])=>v.name));
   };
-  const freeName = async () => {
+  const freeName = async (exclude) => {
     const taken = await takenNames();
+    if(exclude) taken.add(exclude);
     const open = shuffle(names.filter(n=>!taken.has(n)));
     return open[0] || (names[(Math.random()*names.length)|0]+" "+((Math.random()*99)|0));
   };
@@ -675,7 +729,7 @@ async function runPlayer(code){
 
   const drawLobby = () => renderPhoneLobby({
     name:myName, accepted,
-    onRefresh: async ()=>{ myName = await freeName(); update(meRef,{name:myName}).catch(e=>dbg.err("Name refresh failed: "+e.message,{code:e.code})); dbg.info("Picked new name", {myName}); drawLobby(); },
+    onRefresh: async ()=>{ myName = await freeName(myName); update(meRef,{name:myName}).catch(e=>dbg.err("Name refresh failed: "+e.message,{code:e.code})); dbg.info("Picked new name", {myName}); drawLobby(); },
     onAccept: async ()=>{ accepted=true; update(meRef,{accepted:true}).catch(e=>dbg.err("Accept failed: "+e.message,{code:e.code})); dbg.info("Accepted name"); drawLobby(); }
   });
   drawLobby();
@@ -695,7 +749,7 @@ async function runPlayer(code){
 
   function drawQuestion(m){
     renderPhoneQuestion({
-      round:m.round, name:m.name, picks, locked,
+      round:m.round, name:m.name, prompt:m.prompt, picks, locked,
       onToggle:(cat)=>{ if(locked) return; picks.has(cat)?picks.delete(cat):picks.add(cat); drawQuestion(m); },
       onSubmit: async ()=>{
         if(locked) return; locked=true;
@@ -715,7 +769,7 @@ async function runPlayer(code){
     const rv = m.reveal||{correctLabels:[]};
     const a = (await get(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid))).val()||{};
     const score = (await get(ref(db,"rooms/"+code+"/players/"+uid+"/score"))).val()||0;
-    renderPhoneReveal({ correctLabels:rv.correctLabels||[], gotIt:!!a.correct, points:a.points||0, total:score });
+    renderPhoneReveal({ name:rv.name, correctLabels:rv.correctLabels||[], gotIt:!!a.correct, points:a.points||0, total:score });
   }
   async function drawEnded(){
     const ps = (await get(ref(db,"rooms/"+code+"/players"))).val()||{};
@@ -736,22 +790,22 @@ function runDemo(kind){
     screens = [
       ()=>renderHostLobby({code:"WXYZ", url:location.origin+location.pathname+"?room=WXYZ",
         players:{a:{name:"Captain Wiggles",accepted:true}, b:{name:"Old Greg",accepted:true}, c:{name:"Susan Doom",accepted:false}}}),
-      ()=>renderHostQuestion({round:0, name:"Charizard", answered:2, total:3}),
+      ()=>renderHostQuestion({round:0, name:"Charizard", prompt:"Is your Mom taking this?", answered:2, total:3}),
       ()=>renderHostReveal({round:0, name:"Charizard",
         correctLabels:[["Dragon","dragon"],["Pokémon","poke"]],
-        scoredRows:[{name:"Old Greg",points:250},{name:"Captain Wiggles",points:225},{name:"Susan Doom",points:0}],
+        scoreRows:[{name:"Old Greg",old:225,new:475,delta:250},{name:"Captain Wiggles",old:125,new:350,delta:225},{name:"Susan Doom",old:100,new:100,delta:0}],
         isLast:false, onNext:next}),
-      ()=>renderHostQuestion({round:1, name:"Ozempic", answered:1, total:3}),
+      ()=>renderHostQuestion({round:1, name:"Ozempic", prompt:"Any guesses?", answered:1, total:3}),
       ()=>renderHostEnded({leaderboard:[{name:"Old Greg",score:475},{name:"Captain Wiggles",score:350},{name:"Susan Doom",score:100}]})
     ];
   } else {
     screens = [
       ()=>renderPhoneLobby({name:"Baron von Snacc",accepted:false,onRefresh:()=>{},onAccept:next}),
       ()=>renderPhoneLobby({name:"Baron von Snacc",accepted:true}),
-      ()=>{ const p=new Set(["dragon"]); renderPhoneQuestion({round:0,name:"Charizard",picks:p,locked:false,
-        onToggle:(c)=>{p.has(c)?p.delete(c):p.add(c); screens[i]=()=>renderPhoneQuestion({round:0,name:"Charizard",picks:p,locked:false,onToggle:()=>{},onSubmit:next}); screens[i]();},
+      ()=>{ const p=new Set(["dragon"]); renderPhoneQuestion({round:0,name:"Charizard",prompt:"What is this thing?",picks:p,locked:false,
+        onToggle:(c)=>{p.has(c)?p.delete(c):p.add(c); screens[i]=()=>renderPhoneQuestion({round:0,name:"Charizard",prompt:"What is this thing?",picks:p,locked:false,onToggle:()=>{},onSubmit:next}); screens[i]();},
         onSubmit:next}); },
-      ()=>renderPhoneReveal({correctLabels:[["Dragon","dragon"],["Pokémon","poke"]],gotIt:true,points:250,total:250}),
+      ()=>renderPhoneReveal({name:"Charizard",correctLabels:[["Dragon","dragon"],["Pokémon","poke"]],gotIt:true,points:250,total:250}),
       ()=>renderPhoneEnded({name:"Baron von Snacc",score:350,place:2,count:3})
     ];
   }
