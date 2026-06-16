@@ -157,6 +157,30 @@ h1,h2,h3,.display{font-family:'Lilita One',cursive;font-weight:400;letter-spacin
 .spinner{width:42px;height:42px;border-radius:50%;border:5px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 a{color:var(--gold1)}
+
+/* ---- Debug overlay (toggle with D on a keyboard) ---- */
+#debug{position:fixed;top:0;right:0;width:min(460px,96vw);height:100dvh;z-index:9999;display:none;
+  flex-direction:column;background:rgba(8,6,16,.95);backdrop-filter:blur(5px);border-left:1px solid #3a3160;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.45;color:#d7e0ff;box-shadow:-12px 0 40px rgba(0,0,0,.5)}
+#debug.open{display:flex}
+#debug header{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid #2a2448;background:#120e26}
+#debug header b{flex:1;color:#fff;font-weight:700}
+#debug button{font:inherit;border:1px solid #4a4180;background:#1d1740;color:#cfe;border-radius:8px;padding:6px 10px;cursor:pointer}
+#debug button:hover{background:#2a2058}
+#debug .status{padding:10px 12px;border-bottom:1px solid #2a2448;display:grid;grid-template-columns:auto 1fr;gap:3px 12px;max-height:34vh;overflow:auto}
+#debug .status .k{color:#8ea2ff}
+#debug .status .v{color:#fff;word-break:break-all}
+#debug .status .v.bad{color:#ff7a85;font-weight:700}
+#debug .status .v.good{color:#5ee6a0}
+#debug .log{flex:1;overflow:auto;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+#debug .e{border-left:3px solid #555;padding:4px 8px;background:rgba(255,255,255,.03);border-radius:0 6px 6px 0;white-space:pre-wrap;word-break:break-word}
+#debug .e .t{color:#7c84a8;margin-right:6px}
+#debug .e.info{border-color:#5b8cff}
+#debug .e.ok{border-color:#3ddc84}
+#debug .e.warn{border-color:#f3b53f;background:rgba(243,181,63,.08)}
+#debug .e.error{border-color:#ff5a6a;background:rgba(255,90,106,.10);color:#ffd7db}
+#debug .e .data{color:#9fb0d8;display:block;margin-top:2px}
+#debug .hint{padding:8px 12px;color:#7c84a8;border-top:1px solid #2a2448}
 </style>
 </head>
 <body>
@@ -192,6 +216,7 @@ const app = document.getElementById("app");
 const $ = (tag, props={}, ...kids) => {
   const e = document.createElement(tag);
   for (const [k,v] of Object.entries(props)){
+    if (v===null || v===false || v===undefined) continue; // e.g. disabled:null → leave attribute off
     if (k==="class") e.className=v;
     else if (k==="html") e.innerHTML=v;
     else if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), v);
@@ -216,15 +241,125 @@ const logo = () => $("div",{class:"logo"},
 
 const loading = (msg="Loading…") => mount(logo(), $("div",{class:"spinner"}), $("div",{class:"muted"},msg));
 
+/* =========================================================================
+   DEBUG OVERLAY — press the D key (on a keyboard) to show/hide.
+   Captures status + a rolling log of errors. "Copy all" → paste into chat.
+   ========================================================================= */
+const dbg = (() => {
+  const logs = [];
+  const state = {
+    mode:"—", room:"—", uid:"—", connected:"—", gameState:"lobby",
+    configReady:String(typeof CONFIG_READY!=="undefined" && CONFIG_READY),
+    online:String(navigator.onLine), XLSX:String(!!window.XLSX), QRCode:String(!!window.QRCode),
+    projectId:(typeof firebaseConfig!=="undefined" ? firebaseConfig.projectId : "—"),
+    url:location.href
+  };
+  const esc = s => String(s).replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+  const now = () => new Date().toLocaleTimeString();
+  const badKeys = new Set(["connected","online","XLSX","QRCode","configReady"]);
+  let root, statusEl, logEl, open=false;
+
+  function build(){
+    root = document.createElement("div"); root.id="debug";
+    root.innerHTML =
+      '<header><b>🐞 Debug</b>'+
+      '<button data-copy>Copy all</button>'+
+      '<button data-clear>Clear</button>'+
+      '<button data-close>✕</button></header>'+
+      '<div class="status"></div><div class="log"></div>'+
+      '<div class="hint">Press D to hide · tap “Copy all” and paste the result into the chat</div>';
+    document.body.appendChild(root);
+    statusEl = root.querySelector(".status"); logEl = root.querySelector(".log");
+    root.querySelector("[data-close]").onclick = () => toggle(false);
+    root.querySelector("[data-clear]").onclick = () => { logs.length=0; renderLog(); };
+    root.querySelector("[data-copy]").onclick = copyAll;
+  }
+  function renderStatus(){
+    statusEl.innerHTML = Object.entries(state).map(([k,v])=>{
+      let cls="v";
+      if(k==="connected") cls += v===true?" good":(v===false?" bad":"");
+      if(k==="configReady"||k==="XLSX"||k==="QRCode"||k==="online") cls += (v==="true"?" good":" bad");
+      return '<span class="k">'+esc(k)+'</span><span class="'+cls+'">'+esc(v)+'</span>';
+    }).join("");
+  }
+  function renderLog(){
+    logEl.innerHTML = logs.map(e=>{
+      const data = e.data!==undefined ? '<span class="data">'+esc(typeof e.data==="string"?e.data:JSON.stringify(e.data))+'</span>' : '';
+      return '<div class="e '+e.level+'"><span class="t">'+esc(e.t)+'</span>'+esc(e.msg)+data+'</div>';
+    }).join("");
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function log(level,msg,data){
+    logs.push({t:now(),level,msg,data});
+    if(logs.length>400) logs.shift();
+    if(open) renderLog();
+  }
+  function set(k,v){ state[k]=v; if(open) renderStatus(); }
+  function toggle(force){
+    if(!root) build();
+    open = (force===undefined) ? !open : force;
+    root.classList.toggle("open", open);
+    if(open){ renderStatus(); renderLog(); }
+  }
+  function copyAll(){
+    const lines = ["=== Drug, Dragon, or Pokémon — debug dump ==="," "+now(),"","[STATUS]"];
+    for(const [k,v] of Object.entries(state)) lines.push("  "+k+": "+v);
+    lines.push("","[LOG] (oldest → newest)");
+    for(const e of logs) lines.push("  ["+e.t+"] "+e.level.toUpperCase().padEnd(5)+" "+e.msg+
+      (e.data!==undefined ? "  | "+(typeof e.data==="string"?e.data:JSON.stringify(e.data)) : ""));
+    const text = lines.join("\n");
+    const done = () => { const b=root.querySelector("[data-copy]"); const o=b.textContent; b.textContent="Copied ✓"; setTimeout(()=>b.textContent=o,1200); };
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done,()=>fallback(text,done)); }
+    else fallback(text,done);
+  }
+  function fallback(text,done){
+    const ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta); ta.select();
+    try{ document.execCommand("copy"); done(); }catch(_){ alert("Copy failed — select and copy manually:\n\n"+text); }
+    ta.remove();
+  }
+  return {
+    set,
+    info:(m,d)=>log("info",m,d), ok:(m,d)=>log("ok",m,d),
+    warn:(m,d)=>log("warn",m,d), err:(m,d)=>log("error",m,d),
+    toggle
+  };
+})();
+
+// catch-all: uncaught errors and unhandled promise rejections (Firebase write failures land here)
+window.addEventListener("error", e => dbg.err("Uncaught error: "+e.message, {file:(e.filename||"").split("/").pop(), line:e.lineno}));
+window.addEventListener("unhandledrejection", e => {
+  const r = e.reason || {};
+  dbg.err("Unhandled rejection: "+(r.message || String(r)), {code:r.code || null});
+});
+// surface anything sent to console.error/warn
+["error","warn"].forEach(fn => {
+  const orig = console[fn];
+  console[fn] = (...a) => { try{ dbg[fn==="error"?"err":"warn"]("console."+fn+": "+a.map(x=>x&&x.message||x).join(" ")); }catch(_){ } orig.apply(console,a); };
+});
+// live connection + network state
+window.addEventListener("online",  ()=>dbg.set("online","true"));
+window.addEventListener("offline", ()=>dbg.set("online","false"));
+// the toggle key — ignore when typing or when a modifier is held (so Cmd/Ctrl+D still bookmarks)
+window.addEventListener("keydown", e => {
+  if(e.key!=="d" && e.key!=="D") return;
+  if(e.ctrlKey||e.metaKey||e.altKey) return;
+  const t=e.target; if(t && /^(input|textarea|select)$/i.test(t.tagName)) return;
+  e.preventDefault(); dbg.toggle();
+});
+console.log("%cPress D for the debug panel","color:#8ea2ff");
+
 /* ---------- data loaders ---------- */
 async function loadNames(){
   const r = await fetch("names.txt", {cache:"no-store"});
-  if(!r.ok) throw new Error("names.txt not found");
-  return (await r.text()).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  if(!r.ok){ dbg.err("names.txt failed to load (HTTP "+r.status+")", {status:r.status}); throw new Error("names.txt not found"); }
+  const list = (await r.text()).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  dbg.ok("names.txt loaded", {count:list.length});
+  return list;
 }
 async function loadSheet(){
+  if(!window.XLSX){ dbg.err("XLSX library not loaded — the SheetJS CDN may be blocked"); throw new Error("XLSX missing"); }
   const r = await fetch("DDP.xlsx", {cache:"no-store"});
-  if(!r.ok) throw new Error("DDP.xlsx not found");
+  if(!r.ok){ dbg.err("DDP.xlsx failed to load (HTTP "+r.status+")", {status:r.status}); throw new Error("DDP.xlsx not found"); }
   const wb = XLSX.read(await r.arrayBuffer(), {type:"array"});
   const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1});
   const map = new Map(); // displayName -> Set(categories)
@@ -235,6 +370,7 @@ async function loadSheet(){
   };
   for(let i=1;i<rows.length;i++){ const row=rows[i]||[];
     add(row[0],"drug"); add(row[1],"dragon"); add(row[2],"pokemon"); add(row[3],null); }
+  dbg.ok("DDP.xlsx parsed", {candidates:map.size});
   return map; // keys() = every candidate name
 }
 
@@ -382,27 +518,48 @@ function renderPhoneEnded({name, score, place, count}){
    ========================================================================= */
 let db, uid;
 async function initFirebase(){
-  const fb = initializeApp(firebaseConfig);
-  db = getDatabase(fb);
-  const auth = getAuth(fb);
-  await signInAnonymously(auth);
+  dbg.info("Initializing Firebase…", {projectId:firebaseConfig.projectId, hasDatabaseURL:!!firebaseConfig.databaseURL});
+  if(!firebaseConfig.databaseURL) dbg.warn("No databaseURL in config — Realtime Database calls will fail");
+  let fb, auth;
+  try{
+    fb = initializeApp(firebaseConfig);
+    db = getDatabase(fb);
+    auth = getAuth(fb);
+  }catch(e){ dbg.err("Firebase init failed: "+e.message, {code:e.code}); throw e; }
+  try{
+    await signInAnonymously(auth);
+  }catch(e){
+    dbg.err("Anonymous sign-in failed — is Anonymous auth enabled in the console? ("+e.message+")", {code:e.code});
+    throw e;
+  }
   uid = await new Promise(res => onAuthStateChanged(auth, u => u && res(u.uid)));
+  dbg.set("uid", uid); dbg.ok("Signed in anonymously", {uid});
+  onValue(ref(db, ".info/connected"), s => dbg.set("connected", s.val()===true));
 }
 
 /* ---------------- HOST ---------------- */
 async function runHost(){
   loading("Setting up the table…");
+  dbg.set("mode","HOST");
   await initFirebase();
   const [nameMap] = await Promise.all([loadSheet(), loadNames().catch(()=>[])]); // host only needs the sheet
   const code = roomCode();
   const url = location.origin + location.pathname + "?room=" + code;
+  dbg.set("room", code);
   const roomRef = ref(db, "rooms/"+code);
-  await set(roomRef, { meta:{ state:"lobby", round:0, hostUid:uid, createdAt:serverTimestamp() } });
+  try{
+    await set(roomRef, { meta:{ state:"lobby", round:0, hostUid:uid, createdAt:serverTimestamp() } });
+    dbg.ok("Room created", {code});
+  }catch(e){
+    dbg.err("Room create write failed — check Realtime Database rules are PUBLISHED ("+e.message+")", {code:e.code, path:"rooms/"+code});
+    throw e;
+  }
   onDisconnect(roomRef).remove();   // tidy the room up when the host screen closes
 
   // pick this game's mystery names + remember their correct sets (host-side only)
   const candidates = shuffle([...nameMap.keys()]).slice(0, ROUNDS);
   while(candidates.length < ROUNDS && nameMap.size) candidates.push(candidates[candidates.length-1]); // fallback if tiny sheet
+  dbg.info("Mystery names chosen for this game", {candidates});
 
   let players = {};        // live snapshot
   let roster = [];         // uids frozen at game start
@@ -422,13 +579,18 @@ async function runHost(){
   function startGame(){
     started = true; state = "question";
     roster = Object.keys(players);
+    dbg.info("All players accepted — starting game", {roster:roster.length});
+    dbg.set("roster", roster.length);
     beginRound(0);
   }
 
   function beginRound(r){
     const name = candidates[r];
+    dbg.info("Round "+(r+1)+" begins", {name});
+    dbg.set("gameState", "question r"+r);
     update(roomRef, { "meta/state":"question", "meta/round":r, "meta/name":name,
-                      "meta/roundStartAt":serverTimestamp(), "meta/reveal":null });
+                      "meta/roundStartAt":serverTimestamp(), "meta/reveal":null })
+      .catch(e=>dbg.err("beginRound write failed: "+e.message,{code:e.code}));
     renderHostQuestion({round:r, name, answered:0, total:roster.length});
     onValue(ref(db,"rooms/"+code+"/answers/"+r), snap=>{
       const ans = snap.val()||{};
@@ -440,6 +602,7 @@ async function runHost(){
 
   async function revealRound(r, ans, name){
     if(revealed.has(r)) return; revealed.add(r); state="reveal";
+    dbg.set("gameState", "reveal r"+r);
     const correctSet = nameMap.get(name) || new Set();
     const correctLabels = labelsFor(correctSet);
     const base = 100 * Math.max(1, correctSet.size);
@@ -449,13 +612,15 @@ async function runHost(){
     const bonus = [50,25];
     const pointsByUid = {};
     correct.forEach((u,i)=> pointsByUid[u] = base + (bonus[i]||0));
+    dbg.info("Scoring round "+(r+1), {name, correct:[...correctSet], exactlyRight:correct.length, base});
     const updates = { "meta/state":"reveal", "meta/reveal":{ name, correctLabels } };
     roster.forEach(u=>{
       const pts = pointsByUid[u]||0;
       if(pts>0) updates["players/"+u+"/score"] = increment(pts);
       if(ans[u]){ updates["answers/"+r+"/"+u+"/points"]=pts; updates["answers/"+r+"/"+u+"/correct"]=pts>0; }
     });
-    await update(roomRef, updates);
+    try{ await update(roomRef, updates); }
+    catch(e){ dbg.err("Score write failed (host write permission?): "+e.message, {code:e.code}); }
     const scoredRows = roster.map(u=>({name:players[u]?.name||"???", points:pointsByUid[u]||0}))
                              .sort((a,b)=>b.points-a.points);
     renderHostReveal({ round:r, name, correctLabels, scoredRows, isLast:r+1>=ROUNDS,
@@ -476,11 +641,12 @@ async function runHost(){
 /* ---------------- PLAYER ---------------- */
 async function runPlayer(code){
   loading("Connecting to game…");
+  dbg.set("mode","PLAYER"); dbg.set("room", code);
   await initFirebase();
   const roomRef = ref(db,"rooms/"+code);
   const metaSnap = await get(ref(db,"rooms/"+code+"/meta"));
-  if(!metaSnap.exists()) return mount(logo(), $("div",{class:"note"},"No game found for code ",$("b",{},code),". Check the screen and scan again."));
-  if(metaSnap.val().state!=="lobby") return mount(logo(), $("div",{class:"note"},"This game has already started. Catch the next one!"));
+  if(!metaSnap.exists()){ dbg.warn("No game found for code "+code); return mount(logo(), $("div",{class:"note"},"No game found for code ",$("b",{},code),". Check the screen and scan again.")); }
+  if(metaSnap.val().state!=="lobby"){ dbg.warn("Game already in progress (state="+metaSnap.val().state+")"); return mount(logo(), $("div",{class:"note"},"This game has already started. Catch the next one!")); }
 
   const names = await loadNames();
   const meRef = ref(db,"rooms/"+code+"/players/"+uid);
@@ -498,19 +664,26 @@ async function runPlayer(code){
   let myName = await freeName();
   let accepted = false, locked = false, lastRound = -1;
   let picks = new Set();
-  await set(meRef, { name:myName, accepted:false, score:0, joinedAt:serverTimestamp() });
+  try{
+    await set(meRef, { name:myName, accepted:false, score:0, joinedAt:serverTimestamp() });
+    dbg.ok("Joined lobby as "+myName);
+  }catch(e){
+    dbg.err("Join write failed (rules?): "+e.message, {code:e.code, path:"players/"+uid});
+    return mount(logo(), $("div",{class:"note"},"Couldn't join — open the debug panel for details."));
+  }
   onDisconnect(meRef).remove();
 
   const drawLobby = () => renderPhoneLobby({
     name:myName, accepted,
-    onRefresh: async ()=>{ myName = await freeName(); await update(meRef,{name:myName}); drawLobby(); },
-    onAccept: async ()=>{ accepted=true; await update(meRef,{accepted:true}); drawLobby(); }
+    onRefresh: async ()=>{ myName = await freeName(); update(meRef,{name:myName}).catch(e=>dbg.err("Name refresh failed: "+e.message,{code:e.code})); dbg.info("Picked new name", {myName}); drawLobby(); },
+    onAccept: async ()=>{ accepted=true; update(meRef,{accepted:true}).catch(e=>dbg.err("Accept failed: "+e.message,{code:e.code})); dbg.info("Accepted name"); drawLobby(); }
   });
   drawLobby();
 
   // react to game state
   onValue(ref(db,"rooms/"+code+"/meta"), snap=>{
-    const m = snap.val(); if(!m) return mount(logo(),$("div",{class:"note"},"The host closed the game."));
+    const m = snap.val(); if(!m){ dbg.warn("Room closed by host"); return mount(logo(),$("div",{class:"note"},"The host closed the game.")); }
+    dbg.set("gameState", m.state + (m.round!=null? " r"+m.round : ""));
     if(m.state==="lobby"){ if(!accepted) drawLobby(); return; }
     if(m.state==="question"){
       if(m.round!==lastRound){ lastRound=m.round; picks=new Set(); locked=false; }
@@ -526,7 +699,14 @@ async function runPlayer(code){
       onToggle:(cat)=>{ if(locked) return; picks.has(cat)?picks.delete(cat):picks.add(cat); drawQuestion(m); },
       onSubmit: async ()=>{
         if(locked) return; locked=true;
-        await set(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid), {picks:[...picks], at:serverTimestamp()});
+        dbg.info("Submitting answer", {round:m.round, picks:[...picks]});
+        try{
+          await set(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid), {picks:[...picks], at:serverTimestamp()});
+          dbg.ok("Answer submitted", {round:m.round});
+        }catch(e){
+          locked=false; // let them retry
+          dbg.err("Submit write failed (rules?): "+e.message, {code:e.code, path:"answers/"+m.round+"/"+uid});
+        }
         drawQuestion(m);
       }
     });
@@ -589,9 +769,14 @@ const demo = params.get("demo");
 const room = params.get("room");
 
 window.addEventListener("DOMContentLoaded", () => {
+  dbg.info("Boot", {demo:demo||null, room:room||null, configReady:CONFIG_READY, online:navigator.onLine,
+    XLSX:!!window.XLSX, QRCode:!!window.QRCode, ua:navigator.userAgent});
+  if(!window.XLSX) dbg.warn("XLSX (SheetJS) not present at boot — CDN may be blocked");
+  if(!window.QRCode) dbg.warn("QRCode library not present at boot — CDN may be blocked");
   try{
     if(demo) return runDemo(demo==="phone"?"phone":"host");
     if(!CONFIG_READY){
+      dbg.warn("Firebase config not filled in — running in placeholder mode");
       return mount(logo(),
         $("div",{class:"note",html:
           "Add your Firebase config near the top of <code>index.html</code> to go live.<br><br>"+
@@ -601,7 +786,8 @@ window.addEventListener("DOMContentLoaded", () => {
     if(room) runPlayer(room.toUpperCase());
     else runHost();
   }catch(e){
-    mount(logo(), $("div",{class:"note"}, "Something broke: "+e.message));
+    dbg.err("Boot crash: "+e.message, {stack:(e.stack||"").split("\n").slice(0,3).join(" | ")});
+    mount(logo(), $("div",{class:"note"}, "Something broke: "+e.message+" — press D for details."));
     console.error(e);
   }
 });
