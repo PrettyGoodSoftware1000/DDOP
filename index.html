@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Drug, Dragon or Pokémon — Biopsy v3
+<!-- Drug, Dragon or Pokémon — Biopsy v4
      Static site for GitHub Pages. Big screen = host (open the bare URL).
      Phones join via ?room=CODE (the QR code points here).
      Needs in the repo root: names.txt, wutdis.txt, tips.txt, and your Firebase config below.
@@ -127,6 +127,9 @@ h1,h2,h3,.display{font-family:'Lilita One',cursive;font-weight:400;letter-spacin
 .chip.ok .tick{background:var(--ok);color:#062}
 .count{font-family:'Lilita One';font-size:40px}
 .count small{font-family:'Nunito';font-weight:900;font-size:15px;opacity:.7}
+.joincount{text-align:center;margin-bottom:6px}
+.jc-num{font-family:'Lilita One';font-size:84px;line-height:1;text-shadow:0 3px 0 rgba(0,0,0,.3)}
+.jc-label{font-family:'Nunito';font-weight:900;font-size:17px;opacity:.7;letter-spacing:.5px}
 
 /* answered pips */
 .pips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:560px}
@@ -238,7 +241,7 @@ const firebaseConfig = {
   appId: "1:577951001199:web:f9e7b65e96357edeb0fb9a"
 };
 
-const VERSION = "Biopsy v3";
+const VERSION = "Biopsy v4";
 let ROUNDS = 3;            // host can change this on the launch screen
 const CONFIG_READY = !firebaseConfig.apiKey.startsWith("PASTE");
 
@@ -285,15 +288,16 @@ function animateCount(node, from, to, ms=850){
 
 /* ---------- audio + celebration ---------- */
 let audioUnlocked = false;
+let isPhone = false;                       // set true in player mode → quieter sound FX
 function unlockAudio(){ audioUnlocked = true; }
 ["pointerdown","keydown","touchstart"].forEach(ev =>
   window.addEventListener(ev, unlockAudio, {once:true, passive:true}));
 
-// play an mp3 by path (e.g. "sounds/dragon03.mp3"); fails quietly + logs
+// play an mp3 by path (e.g. "sounds/dragon03.mp3"); phones play at half volume
 function playSound(path){
   if(!path) return;
   try{
-    const a = new Audio(path); a.volume = 0.95;
+    const a = new Audio(path); a.volume = isPhone ? 0.475 : 0.95;
     a.play().then(()=>dbg.info("Playing "+path))
             .catch(e=>dbg.warn("Sound blocked or missing: "+path+" ("+e.message+")"));
   }catch(e){ dbg.warn("Sound error "+path+": "+e.message); }
@@ -334,15 +338,17 @@ function confettiBurst(){
   const resize = () => { cv.width=innerWidth*dpr; cv.height=innerHeight*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); };
   resize();
   const colors = ["#9b59d0","#f3902f","#ef4655","#f7d774","#3ddc84","#5b8cff"];
-  const N = 140;
+  const N = 150;
   const parts = Array.from({length:N},()=>{
-    const pill = Math.random()<0.32;
+    const roll = Math.random();
+    const kind = roll<0.20 ? "syringe" : (roll<0.50 ? "pill" : "confetti");
+    const big = kind!=="confetti";
     return {
       x: Math.random()*innerWidth, y: -20 - Math.random()*innerHeight*0.5,
       vx: (Math.random()-0.5)*1.4, vy: 2+Math.random()*3.2,
       rot: Math.random()*Math.PI, vr:(Math.random()-0.5)*0.3,
-      size: pill ? 14+Math.random()*10 : 7+Math.random()*7,
-      color: colors[(Math.random()*colors.length)|0], pill
+      size: kind==="syringe" ? 30+Math.random()*20 : (big ? 14+Math.random()*10 : 7+Math.random()*7),
+      color: colors[(Math.random()*colors.length)|0], kind
     };
   });
   const start = performance.now(), life = 4600;
@@ -352,13 +358,15 @@ function confettiBurst(){
     for(const p of parts){
       p.x+=p.vx; p.y+=p.vy; p.vy+=0.04; p.rot+=p.vr;
       ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot);
-      if(p.pill){
+      if(p.kind==="pill"){
         const w=p.size, h=p.size*0.46, r=h/2;
         ctx.fillStyle="#fff"; roundRect(ctx,-w/2,-h/2,w,h,r); ctx.fill();
         ctx.fillStyle=p.color;
         ctx.save(); ctx.beginPath(); roundRect(ctx,-w/2,-h/2,w,h,r); ctx.clip();
         ctx.fillRect(-w/2,-h/2,w/2,h); ctx.restore();
         ctx.lineWidth=1.2; ctx.strokeStyle="rgba(0,0,0,.25)"; roundRect(ctx,-w/2,-h/2,w,h,r); ctx.stroke();
+      } else if(p.kind==="syringe"){
+        drawSyringe(ctx, p.size, p.color);
       } else {
         ctx.fillStyle=p.color; ctx.fillRect(-p.size/2,-p.size/2,p.size,p.size*0.6);
       }
@@ -367,6 +375,25 @@ function confettiBurst(){
     if(t<life) requestAnimationFrame(frame); else cv.remove();
   })(start);
   addEventListener("resize", resize, {once:true});
+}
+// a little colorful medical syringe, drawn centered, length L along x
+function drawSyringe(ctx, L, color){
+  const h = L*0.24;
+  // needle tip (right)
+  ctx.strokeStyle="#d3d9e8"; ctx.lineWidth=Math.max(1,L*0.045); ctx.lineCap="round";
+  ctx.beginPath(); ctx.moveTo(L*0.30,0); ctx.lineTo(L*0.50,0); ctx.stroke();
+  // hub
+  ctx.fillStyle="#aab2c6"; ctx.fillRect(L*0.26,-h*0.18,L*0.05,h*0.36);
+  // barrel (white) + colored liquid
+  ctx.fillStyle="rgba(255,255,255,.92)"; roundRect(ctx,-L*0.30,-h/2,L*0.56,h,h*0.28); ctx.fill();
+  ctx.save(); ctx.beginPath(); roundRect(ctx,-L*0.30,-h/2,L*0.56,h,h*0.28); ctx.clip();
+  ctx.fillStyle=color; ctx.fillRect(-L*0.30,-h/2,L*0.40,h); ctx.restore();
+  ctx.lineWidth=Math.max(1,L*0.028); ctx.strokeStyle="rgba(0,0,0,.3)";
+  roundRect(ctx,-L*0.30,-h/2,L*0.56,h,h*0.28); ctx.stroke();
+  // plunger rod + thumb rest (left)
+  ctx.strokeStyle=color; ctx.lineWidth=Math.max(1.5,L*0.06);
+  ctx.beginPath(); ctx.moveTo(-L*0.30,0); ctx.lineTo(-L*0.46,0); ctx.stroke();
+  ctx.fillStyle=color; ctx.fillRect(-L*0.50,-h*0.55,L*0.05,h*1.1);
 }
 function roundRect(ctx,x,y,w,h,r){
   ctx.beginPath();
@@ -566,17 +593,13 @@ function mysteryCard(name, prompt, footer){
   return $("div",{class:"card big"},
     $("div",{class:"card-inner"},
       $("div",{class:"card-top"},
-        $("div",{class:"card-name"}, prompt || "What is this?"),
-        $("div",{class:"card-hp",html:'? <small>HP</small>'})),
+        $("div",{class:"card-name"}, prompt || "What is this?")),
       $("div",{class:"art"}, $("div",{class:"mystery"}, name)),
       $("div",{class:"card-foot"}, footer||"Drug · Dragon · Pokémon · or none of them?")));
 }
 function nameCard(name){
   return $("div",{class:"card"},
     $("div",{class:"card-inner"},
-      $("div",{class:"card-top"},
-        $("div",{class:"card-name"},"Trainer"),
-        $("div",{class:"card-hp",html:'★'})),
       $("div",{class:"art"}, $("div",{class:"mystery"}, name)),
       $("div",{class:"card-foot"},"This is you")));
 }
@@ -599,15 +622,15 @@ function renderHostLobby({code, url, players, rounds, maxRounds, onRounds, tip})
     $("div",{class:"host-grid"},
       $("div",{class:"panel center"},
         $("div",{class:"eyebrow"},"Scan to join"),
-        qr,
-        $("div",{class:"code"}, code),
-        $("div",{class:"muted",style:"margin-top:6px"}, url)),
+        qr),
       $("div",{class:"panel center"},
-        $("div",{class:"count",html:`${arr.length} <small>player${arr.length===1?"":"s"} in</small>`}),
+        $("div",{class:"joincount"},
+          $("div",{class:"jc-num"}, String(arr.length)),
+          $("div",{class:"jc-label"}, `player${arr.length===1?"":"s"} joined`)),
         $("div",{class:"players",style:"margin:14px 0"}, ...chips),
         $("div",{class:"eyebrow",style:"margin-bottom:8px"},"How many rounds?"),
         stepper,
-        $("div",{class:"muted",style:"margin-top:10px"}, arr.length? "Starts when everyone hits Accept." : "Names come from names.txt"))
+        $("div",{class:"muted",style:"margin-top:10px"}, arr.length? "Starts when everyone hits Accept." : ""))
     ),
     $("div",{class:"tips"}, $("span",{class:"tips-label"},"Tip"), $("span",{id:"tip", class:"tips-text"}, tip||""))
   );
@@ -872,6 +895,7 @@ async function runHost(){
 /* ---------------- PLAYER ---------------- */
 async function runPlayer(code){
   loading("Connecting to game…");
+  isPhone = true;
   dbg.set("mode","PLAYER"); dbg.set("room", code);
   await initFirebase();
   const roomRef = ref(db,"rooms/"+code);
@@ -965,6 +989,7 @@ async function runPlayer(code){
    DEMO MODE — preview every screen without Firebase  (?demo=host | ?demo=phone)
    ========================================================================= */
 function runDemo(kind){
+  if(kind==="phone") isPhone = true;
   const bar = document.getElementById("demobar"); bar.classList.remove("hidden");
   let i = 0; let screens;
   if(kind==="host"){
