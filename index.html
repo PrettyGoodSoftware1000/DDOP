@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<!-- Drug, Dragon or Pokémon — Biopsy v2
+<!-- Drug, Dragon or Pokémon — Biopsy v3
      Static site for GitHub Pages. Big screen = host (open the bare URL).
      Phones join via ?room=CODE (the QR code points here).
      Needs in the repo root: names.txt, wutdis.txt, tips.txt, and your Firebase config below.
      Question data is read live from a public Google Sheet (SHEET_ID constant).
-     Optional: drop roar.mp3 in root for a real dragon roar on score reveal.
+     Optional sounds in root/sounds/: dragon01.mp3, dragon02.mp3 … (also pokemonNN.mp3, drugNN.mp3)
+     play on each round reveal; final.mp3 plays on the final scoreboard. All play on host + phones.
      Preview the look without Firebase: open with ?demo=host or ?demo=phone -->
 <html lang="en">
 <head>
@@ -237,7 +238,7 @@ const firebaseConfig = {
   appId: "1:577951001199:web:f9e7b65e96357edeb0fb9a"
 };
 
-const VERSION = "Biopsy v2";
+const VERSION = "Biopsy v3";
 let ROUNDS = 3;            // host can change this on the launch screen
 const CONFIG_READY = !firebaseConfig.apiKey.startsWith("PASTE");
 
@@ -282,55 +283,49 @@ function animateCount(node, from, to, ms=850){
   requestAnimationFrame(step);
 }
 
-/* ---------- celebration: dragon roar + confetti + falling pills ---------- */
-let audioCtx = null, audioUnlocked = false;
-function unlockAudio(){
-  audioUnlocked = true;
-  try{ audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)(); audioCtx.resume(); }catch(_){}
-}
+/* ---------- audio + celebration ---------- */
+let audioUnlocked = false;
+function unlockAudio(){ audioUnlocked = true; }
 ["pointerdown","keydown","touchstart"].forEach(ev =>
   window.addEventListener(ev, unlockAudio, {once:true, passive:true}));
 
-function dragonRoar(){
-  // Prefer a real roar.mp3 if the host dropped one in root; otherwise synthesize.
+// play an mp3 by path (e.g. "sounds/dragon03.mp3"); fails quietly + logs
+function playSound(path){
+  if(!path) return;
   try{
-    const a = new Audio("roar.mp3"); a.volume = 0.9;
-    a.play().then(()=>dbg.info("Playing roar.mp3")).catch(()=> synthRoar());
-  }catch(_){ synthRoar(); }
-}
-function synthRoar(){
-  try{
-    const ctx = audioCtx || new (window.AudioContext||window.webkitAudioContext)(); audioCtx = ctx; ctx.resume();
-    const t0 = ctx.currentTime, dur = 1.6;
-    const master = ctx.createGain();
-    master.gain.setValueAtTime(0.0001, t0);
-    master.gain.exponentialRampToValueAtTime(0.9, t0+0.08);
-    master.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
-    master.connect(ctx.destination);
-    // growly low sawtooth with a downward pitch sweep
-    const osc = ctx.createOscillator(); osc.type="sawtooth";
-    osc.frequency.setValueAtTime(150, t0);
-    osc.frequency.exponentialRampToValueAtTime(55, t0+dur*0.7);
-    const lp = ctx.createBiquadFilter(); lp.type="lowpass";
-    lp.frequency.setValueAtTime(900, t0); lp.frequency.exponentialRampToValueAtTime(220, t0+dur);
-    // tremolo for the "rrrr" texture
-    const lfo = ctx.createOscillator(); lfo.frequency.value = 28;
-    const lfoGain = ctx.createGain(); lfoGain.gain.value = 0.4;
-    lfo.connect(lfoGain); lfoGain.connect(master.gain);
-    // breath/noise layer
-    const nb = ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
-    const nd = nb.getChannelData(0); for(let i=0;i<nd.length;i++) nd[i]=(Math.random()*2-1)*0.5;
-    const noise = ctx.createBufferSource(); noise.buffer=nb;
-    const nf = ctx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=400; nf.Q.value=0.7;
-    osc.connect(lp); lp.connect(master); noise.connect(nf); nf.connect(master);
-    osc.start(t0); lfo.start(t0); noise.start(t0);
-    osc.stop(t0+dur); lfo.stop(t0+dur); noise.stop(t0+dur);
-    dbg.info("Played synthesized roar");
-  }catch(e){ dbg.warn("Roar audio blocked (needs a click on the host page first): "+e.message); }
+    const a = new Audio(path); a.volume = 0.95;
+    a.play().then(()=>dbg.info("Playing "+path))
+            .catch(e=>dbg.warn("Sound blocked or missing: "+path+" ("+e.message+")"));
+  }catch(e){ dbg.warn("Sound error "+path+": "+e.message); }
 }
 
-function celebrate(){
-  dragonRoar();
+// discover numbered files sounds/<cat>01.mp3, <cat>02.mp3 … (stops at the first gap, cap 40)
+async function probeSounds(cat, max=40){
+  const found = [];
+  for(let i=1;i<=max;i++){
+    const url = "sounds/"+cat+String(i).padStart(2,"0")+".mp3";
+    try{ const r = await fetch(url, {method:"HEAD", cache:"no-store"}); if(r.ok) found.push(url); else break; }
+    catch(_){ break; }
+  }
+  return found;
+}
+async function probeAllSounds(){
+  const cats = ["drug","dragon","pokemon"];
+  const lists = await Promise.all(cats.map(c=>probeSounds(c)));
+  const pools = {}; cats.forEach((c,i)=> pools[c]=lists[i]);
+  dbg.ok("Reveal sounds found", {drug:pools.drug.length, dragon:pools.dragon.length, pokemon:pools.pokemon.length});
+  return pools;
+}
+// choose one clip for a revealed card: random category it belongs to, random clip in that pool
+function pickRevealSound(pools, correctSet){
+  const cats = [...correctSet].filter(c=>pools[c] && pools[c].length);
+  if(!cats.length) return "";
+  const cat = cats[(Math.random()*cats.length)|0];
+  const pool = pools[cat];
+  return pool[(Math.random()*pool.length)|0];
+}
+
+function confettiBurst(){
   const cv = document.createElement("canvas");
   cv.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:9000";
   document.body.appendChild(cv);
@@ -339,7 +334,7 @@ function celebrate(){
   const resize = () => { cv.width=innerWidth*dpr; cv.height=innerHeight*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); };
   resize();
   const colors = ["#9b59d0","#f3902f","#ef4655","#f7d774","#3ddc84","#5b8cff"];
-  const N = 120;
+  const N = 140;
   const parts = Array.from({length:N},()=>{
     const pill = Math.random()<0.32;
     return {
@@ -350,7 +345,7 @@ function celebrate(){
       color: colors[(Math.random()*colors.length)|0], pill
     };
   });
-  const start = performance.now(), life = 3800;
+  const start = performance.now(), life = 4600;
   (function frame(now){
     const t = now-start;
     ctx.clearRect(0,0,innerWidth,innerHeight);
@@ -358,10 +353,8 @@ function celebrate(){
       p.x+=p.vx; p.y+=p.vy; p.vy+=0.04; p.rot+=p.vr;
       ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot);
       if(p.pill){
-        // two-tone capsule = a "pill"
         const w=p.size, h=p.size*0.46, r=h/2;
-        ctx.fillStyle="#fff";
-        roundRect(ctx,-w/2,-h/2,w,h,r); ctx.fill();
+        ctx.fillStyle="#fff"; roundRect(ctx,-w/2,-h/2,w,h,r); ctx.fill();
         ctx.fillStyle=p.color;
         ctx.save(); ctx.beginPath(); roundRect(ctx,-w/2,-h/2,w,h,r); ctx.clip();
         ctx.fillRect(-w/2,-h/2,w/2,h); ctx.restore();
@@ -657,7 +650,6 @@ function renderHostReveal({round, name, correctLabels, scoreRows, isLast, onNext
     $("button",{class:"btn",onClick:onNext}, isLast? "See final scores ▸" : "Next round ▸")
   );
   tasks.forEach(f=>f());
-  celebrate();
 }
 function renderHostEnded({leaderboard}){
   const rows = leaderboard.map((p,i)=>$("div",{class:"row"+(i===0?" first":"")},
@@ -754,7 +746,7 @@ async function runHost(){
   loading("Setting up the table…");
   dbg.set("mode","HOST");
   await initFirebase();
-  const [nameMap, wutdis, tips] = await Promise.all([loadSheet(), loadWutdis(), loadTips(), loadNames().catch(()=>[])]); // host needs sheet + prompts + tips
+  const [nameMap, wutdis, tips, soundPools] = await Promise.all([loadSheet(), loadWutdis(), loadTips(), probeAllSounds(), loadNames().catch(()=>[])]);
   const code = roomCode();
   const url = location.origin + location.pathname + "?room=" + code;
   dbg.set("room", code);
@@ -846,7 +838,8 @@ async function runHost(){
     // snapshot totals BEFORE the increment write so the scoreboard can count up
     const oldTotals = {};
     roster.forEach(u => oldTotals[u] = players[u]?.score || 0);
-    const updates = { "meta/state":"reveal", "meta/reveal":{ name, correctLabels } };
+    const soundPath = pickRevealSound(soundPools, correctSet);
+    const updates = { "meta/state":"reveal", "meta/reveal":{ name, correctLabels, sound:soundPath } };
     roster.forEach(u=>{
       const pts = pointsByUid[u]||0;
       if(pts>0) updates["players/"+u+"/score"] = increment(pts);
@@ -854,6 +847,7 @@ async function runHost(){
     });
     try{ await update(roomRef, updates); }
     catch(e){ dbg.err("Score write failed (host write permission?): "+e.message, {code:e.code}); }
+    playSound(soundPath);   // category sound on the host (phones play the same path from meta)
     const scoreRows = roster.map(u=>{
         const delta = pointsByUid[u]||0;
         return { name:players[u]?.name||"???", old:oldTotals[u], new:oldTotals[u]+delta, delta };
@@ -870,6 +864,8 @@ async function runHost(){
     const leaderboard = roster.map(u=>({name:ps[u]?.name||"???", score:ps[u]?.score||0}))
                               .sort((a,b)=>b.score-a.score);
     renderHostEnded({leaderboard});
+    playSound("sounds/final.mp3");   // final fanfare
+    confettiBurst();                 // confetti only here, at the very end
   }
 }
 
@@ -899,6 +895,7 @@ async function runPlayer(code){
 
   let myName = await freeName();
   let accepted = false, locked = false, lastRound = -1;
+  let lastSoundRound = -1, endedOnce = false;
   let picks = new Set();
   try{
     await set(meRef, { name:myName, accepted:false, score:0, joinedAt:serverTimestamp() });
@@ -952,6 +949,7 @@ async function runPlayer(code){
     const a = (await get(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid))).val()||{};
     const score = (await get(ref(db,"rooms/"+code+"/players/"+uid+"/score"))).val()||0;
     renderPhoneReveal({ name:rv.name, correctLabels:rv.correctLabels||[], gotIt:!!a.correct, points:a.points||0, total:score });
+    if(m.round!==lastSoundRound){ lastSoundRound=m.round; playSound(rv.sound); }  // same clip the host chose, once
   }
   async function drawEnded(){
     const ps = (await get(ref(db,"rooms/"+code+"/players"))).val()||{};
@@ -959,6 +957,7 @@ async function runPlayer(code){
     const me = ps[uid]||{name:myName,score:0};
     const place = board.findIndex(p=>p.name===me.name && p.score===me.score)+1;
     renderPhoneEnded({ name:me.name, score:me.score||0, place:place||board.length, count:board.length });
+    if(!endedOnce){ endedOnce=true; playSound("sounds/final.mp3"); confettiBurst(); }
   }
 }
 
@@ -979,7 +978,7 @@ function runDemo(kind){
         scoreRows:[{name:"Old Greg",old:125,new:575,delta:450},{name:"Captain Wiggles",old:100,new:525,delta:425},{name:"Susan Doom",old:200,new:200,delta:0}],
         isLast:false, onNext:next}),
       ()=>renderHostQuestion({round:1, name:"Ozempic", prompt:"Any guesses?", answered:1, total:3}),
-      ()=>renderHostEnded({leaderboard:[{name:"Old Greg",score:475},{name:"Captain Wiggles",score:350},{name:"Susan Doom",score:100}]})
+      ()=>{ renderHostEnded({leaderboard:[{name:"Old Greg",score:575},{name:"Captain Wiggles",score:525},{name:"Susan Doom",score:200}]}); confettiBurst(); playSound("sounds/final.mp3"); }
     ];
   } else {
     screens = [
