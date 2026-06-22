@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Drug, Dragon or Pokémon — Biopsy v4
+<!-- Drug, Dragon or Pokémon — Biopsy v5
      Static site for GitHub Pages. Big screen = host (open the bare URL).
      Phones join via ?room=CODE (the QR code points here).
      Needs in the repo root: names.txt, wutdis.txt, tips.txt, and your Firebase config below.
@@ -125,6 +125,17 @@ h1,h2,h3,.display{font-family:'Lilita One',cursive;font-weight:400;letter-spacin
   border-radius:999px;padding:8px 14px;font-weight:900}
 .chip .tick{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:13px;background:rgba(255,255,255,.15)}
 .chip.ok .tick{background:var(--ok);color:#062}
+.chip .boot{width:22px;height:22px;border-radius:50%;border:none;cursor:pointer;font-size:13px;line-height:1;
+  background:var(--poke);color:#fff;display:grid;place-items:center;flex:none;padding:0;font-weight:900}
+.chip .boot:hover{filter:brightness(1.12)}
+.start-btn{margin-top:14px;font-size:22px;background:linear-gradient(var(--ok),var(--ok2))}
+.start-btn[disabled]{filter:grayscale(.6) brightness(.7)}
+.overtime-btn{position:fixed;right:22px;bottom:22px;z-index:60;font-size:22px;
+  background:linear-gradient(var(--dragon),var(--dragon2))}
+.eyebrow.ot{color:var(--dragon);font-size:15px}
+.display.ot{color:var(--dragon)}
+.ot-badge{font-family:'Lilita One';background:linear-gradient(var(--dragon),var(--dragon2));color:#fff;
+  padding:8px 18px;border-radius:999px;font-size:18px;box-shadow:0 5px 0 rgba(0,0,0,.25)}
 .count{font-family:'Lilita One';font-size:40px}
 .count small{font-family:'Nunito';font-weight:900;font-size:15px;opacity:.7}
 .joincount{text-align:center;margin-bottom:6px}
@@ -223,7 +234,7 @@ a{color:var(--gold1)}
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getDatabase, ref, set, get, update, onValue, onDisconnect, increment, serverTimestamp }
+import { getDatabase, ref, set, get, update, remove, onValue, onDisconnect, increment, serverTimestamp }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
 /* =========================================================================
@@ -241,7 +252,7 @@ const firebaseConfig = {
   appId: "1:577951001199:web:f9e7b65e96357edeb0fb9a"
 };
 
-const VERSION = "Biopsy v4";
+const VERSION = "Biopsy v5";
 let ROUNDS = 3;            // host can change this on the launch screen
 const CONFIG_READY = !firebaseConfig.apiKey.startsWith("PASTE");
 
@@ -607,11 +618,13 @@ function nameCard(name){
 /* =========================================================================
    HOST RENDERERS  (the big screen)
    ========================================================================= */
-function renderHostLobby({code, url, players, rounds, maxRounds, onRounds, tip}){
-  const arr = Object.values(players||{});
+function renderHostLobby({code, url, players, rounds, maxRounds, onRounds, onStart, onBoot, tip}){
+  const entries = Object.entries(players||{});
   const qr = $("div",{class:"qrbox", id:"qr"});
-  const chips = arr.length
-    ? arr.map(p=>$("div",{class:"chip"+(p.accepted?" ok":"")}, $("span",{class:"tick"}, p.accepted?"✓":"…"), p.name))
+  const chips = entries.length
+    ? entries.map(([uid,p])=>$("div",{class:"chip"+(p.accepted?" ok":"")},
+        $("button",{class:"boot","aria-label":"Boot "+p.name, onClick:()=>onBoot(uid)},"✕"),
+        $("span",{class:"tick"}, p.accepted?"✓":"…"), p.name))
     : [$("div",{class:"muted"},"Waiting for players to scan in…")];
   const stepper = $("div",{class:"rounds"},
     $("button",{class:"step", "aria-label":"Fewer rounds", disabled:(rounds<=1?"":null), onClick:()=>onRounds(rounds-1)},"−"),
@@ -625,28 +638,33 @@ function renderHostLobby({code, url, players, rounds, maxRounds, onRounds, tip})
         qr),
       $("div",{class:"panel center"},
         $("div",{class:"joincount"},
-          $("div",{class:"jc-num"}, String(arr.length)),
-          $("div",{class:"jc-label"}, `player${arr.length===1?"":"s"} joined`)),
+          $("div",{class:"jc-num"}, String(entries.length)),
+          $("div",{class:"jc-label"}, `player${entries.length===1?"":"s"} joined`)),
         $("div",{class:"players",style:"margin:14px 0"}, ...chips),
         $("div",{class:"eyebrow",style:"margin-bottom:8px"},"How many rounds?"),
         stepper,
-        $("div",{class:"muted",style:"margin-top:10px"}, arr.length? "Starts when everyone hits Accept." : ""))
+        $("button",{class:"btn start-btn", disabled:(entries.length?null:""), onClick:onStart}, "Start game ▸"))
     ),
     $("div",{class:"tips"}, $("span",{class:"tips-label"},"Tip"), $("span",{id:"tip", class:"tips-text"}, tip||""))
   );
   if (window.QRCode) new QRCode(qr, {text:url, width:208, height:208, colorDark:"#1a1430", colorLight:"#ffffff"});
 }
-function renderHostQuestion({round, name, prompt, answered, total}){
+function otEyebrow(round, overtime){
+  return overtime
+    ? $("div",{class:"eyebrow ot"},`⚡ Overtime · Round ${round+1} of ${ROUNDS} · 2× points`)
+    : $("div",{class:"eyebrow"},`Round ${round+1} of ${ROUNDS}`);
+}
+function renderHostQuestion({round, name, prompt, answered, total, overtime}){
   const pips = Array.from({length:total},(_,i)=>$("div",{class:"pip"+(i<answered?" on":"")}));
   mount(
-    $("div",{class:"eyebrow"},`Round ${round+1} of ${ROUNDS}`),
+    otEyebrow(round, overtime),
     mysteryCard(name, prompt),
     $("div",{class:"panel center"},
       $("div",{class:"count",html:`${answered}/${total} <small>answered</small>`}),
       $("div",{class:"pips",style:"margin-top:12px"}, ...pips))
   );
 }
-function renderHostReveal({round, name, correctLabels, scoreRows, isLast, onNext}){
+function renderHostReveal({round, name, correctLabels, scoreRows, isLast, overtime, onNext}){
   const tags = correctLabels.map(([lbl,cls])=>$("div",{class:"tag "+cls}, lbl));
   const tasks = [];
   const rows = scoreRows.length
@@ -662,7 +680,7 @@ function renderHostReveal({round, name, correctLabels, scoreRows, isLast, onNext
       })
     : [$("div",{class:"muted"},"No answers.")];
   mount(
-    $("div",{class:"eyebrow"},`Round ${round+1} of ${ROUNDS}`),
+    otEyebrow(round, overtime),
     // the name sits right next to the Drug/Dragon/Pokémon answer
     $("div",{class:"reveal-answer"},
       $("span",{class:"reveal-name"}, name),
@@ -674,14 +692,32 @@ function renderHostReveal({round, name, correctLabels, scoreRows, isLast, onNext
   );
   tasks.forEach(f=>f());
 }
-function renderHostEnded({leaderboard}){
+function renderHostEnded({leaderboard, onOvertime}){
   const rows = leaderboard.map((p,i)=>$("div",{class:"row"+(i===0?" first":"")},
     $("span",{class:"rank"}, i===0?"🏆":`${i+1}`), p.name, $("span",{class:"pts"}, p.score)));
   mount(
     logo(),
     $("h1",{class:"display",style:"font-size:clamp(28px,5vw,48px)"},"Final scores"),
     $("div",{class:"board"}, ...rows),
-    $("div",{class:"muted"},"Refresh the page to start a new game.")
+    $("div",{class:"muted"},"Refresh the page to start a new game."),
+    ...(onOvertime ? [$("button",{class:"btn overtime-btn", onClick:onOvertime}, "Overtime! ⚡")] : [])
+  );
+}
+function renderHostOvertimeSetup({rounds, maxRounds, onRounds, onStart, onBack}){
+  const stepper = $("div",{class:"rounds"},
+    $("button",{class:"step", "aria-label":"Fewer rounds", disabled:(rounds<=1?"":null), onClick:()=>onRounds(rounds-1)},"−"),
+    $("div",{class:"rounds-val"}, $("b",{},String(rounds)), $("small",{}, rounds===1?"round":"rounds")),
+    $("button",{class:"step", "aria-label":"More rounds", disabled:(rounds>=maxRounds?"":null), onClick:()=>onRounds(rounds+1)},"+"));
+  mount(
+    logo(),
+    $("h1",{class:"display ot",style:"font-size:clamp(30px,6vw,56px)"},"⚡ Overtime"),
+    $("div",{class:"panel center"},
+      $("div",{class:"eyebrow",style:"margin-bottom:10px"},"More rounds"),
+      stepper,
+      $("div",{class:"muted",style:"margin-top:10px"},"Everything's worth double in overtime.")),
+    $("div",{style:"display:flex;gap:12px"},
+      $("button",{class:"btn ghost", onClick:onBack},"◂ Back"),
+      $("button",{class:"btn", onClick:onStart},"Start overtime ▸"))
   );
 }
 
@@ -700,7 +736,7 @@ function renderPhoneLobby({name, accepted, onRefresh, onAccept}){
       $("button",{class:"submit",style:"width:auto;padding:14px 26px",onClick:onAccept},"Accept ✓"))
   );
 }
-function renderPhoneQuestion({round, name, prompt, picks, locked, onToggle, onSubmit}){
+function renderPhoneQuestion({round, name, prompt, picks, locked, overtime, onToggle, onSubmit}){
   const mk = (cat) => {
     const cls = CAT_CLASS[cat];
     const on = picks.has(cat);
@@ -708,6 +744,7 @@ function renderPhoneQuestion({round, name, prompt, picks, locked, onToggle, onSu
       onClick:()=>onToggle(cat)}, $("span",{class:"dot"}, on?"✓":""), CAT_LABEL[cat]);
   };
   mount(
+    ...(overtime ? [$("div",{class:"ot-badge"},"⚡ Overtime · 2× points")] : []),
     $("div",{class:"eyebrow"},`Round ${round+1} · ${prompt || "What is this?"}`),
     $("div",{class:"display",style:"font-size:clamp(30px,9vw,52px);text-align:center"}, name),
     $("div",{class:"badges"}, mk("drug"), mk("dragon"), mk("pokemon")),
@@ -717,9 +754,10 @@ function renderPhoneQuestion({round, name, prompt, picks, locked, onToggle, onSu
       locked? "Waiting for the round to end…" : "Pick all that apply. Charizard is two things…")
   );
 }
-function renderPhoneReveal({name, correctLabels, gotIt, points, total}){
+function renderPhoneReveal({name, correctLabels, gotIt, points, total, overtime}){
   const tags = correctLabels.map(([lbl,cls])=>$("div",{class:"tag "+cls}, lbl));
   mount(
+    ...(overtime ? [$("div",{class:"ot-badge"},"⚡ Overtime · 2×")] : []),
     $("div",{class:"eyebrow"}, gotIt? "Nailed it" : "Not quite"),
     $("div",{class:"score-flash"}, gotIt? `+${points}` : "+0"),
     $("div",{class:"muted"}, (name? name+" is:" : "It was:")),
@@ -799,30 +837,42 @@ async function runHost(){
   let roster = [];         // uids frozen at game start
   let state = "lobby";
   let started = false;
+  let scoreMult = 1;       // 2 during overtime
+  let inOvertime = false;
   const revealed = new Set();
+
+  // pick n distinct random names, avoiding `used` where possible
+  function pickNames(n, used=[]){
+    const usedSet = new Set(used);
+    const pool = shuffle([...nameMap.keys()].filter(x=>!usedSet.has(x)));
+    const out = pool.slice(0, n);
+    const all = [...nameMap.keys()];
+    while(out.length < n && all.length) out.push(all[(Math.random()*all.length)|0]);
+    return out;
+  }
 
   const drawLobby = () => renderHostLobby({
     code, url, players, rounds:ROUNDS, maxRounds, tip:currentTip,
-    onRounds:(n)=>{ ROUNDS = Math.max(1, Math.min(maxRounds, n)); dbg.info("Rounds set to "+ROUNDS); drawLobby(); }
+    onRounds:(n)=>{ ROUNDS = Math.max(1, Math.min(maxRounds, n)); dbg.info("Rounds set to "+ROUNDS); drawLobby(); },
+    onStart: ()=>{ if(Object.keys(players).length) startGame(); },
+    onBoot: (bootUid)=>{
+      remove(ref(db,"rooms/"+code+"/players/"+bootUid)).catch(e=>dbg.err("Boot failed: "+e.message,{code:e.code}));
+      dbg.info("Booted player", {bootUid});
+    }
   });
 
   onValue(ref(db,"rooms/"+code+"/players"), snap=>{
     players = snap.val()||{};
-    if(state==="lobby"){
-      drawLobby();
-      const arr = Object.values(players);
-      if(!started && arr.length>=1 && arr.every(p=>p.accepted)) startGame();
-    }
+    if(state==="lobby") drawLobby();   // host presses Start to begin (no auto-start)
   });
 
   function startGame(){
     started = true; state = "question";
     roster = Object.keys(players);
-    // pick this game's mystery names now that the round count is locked (host-side only)
-    candidates = shuffle([...nameMap.keys()]).slice(0, ROUNDS);
-    while(candidates.length < ROUNDS && nameMap.size) candidates.push(candidates[candidates.length-1]);
-    update(roomRef, { "meta/rounds": ROUNDS });
-    dbg.info("All players accepted — starting game", {roster:roster.length, rounds:ROUNDS, candidates});
+    candidates = pickNames(ROUNDS);                 // mystery names (host-side only)
+    scoreMult = 1; inOvertime = false;
+    update(roomRef, { "meta/rounds": ROUNDS, "meta/overtime": false });
+    dbg.info("Host started the game", {roster:roster.length, rounds:ROUNDS, candidates});
     dbg.set("roster", roster.length);
     beginRound(0);
   }
@@ -835,11 +885,11 @@ async function runHost(){
     update(roomRef, { "meta/state":"question", "meta/round":r, "meta/name":name, "meta/prompt":prompt,
                       "meta/roundStartAt":serverTimestamp(), "meta/reveal":null })
       .catch(e=>dbg.err("beginRound write failed: "+e.message,{code:e.code}));
-    renderHostQuestion({round:r, name, prompt, answered:0, total:roster.length});
+    renderHostQuestion({round:r, name, prompt, answered:0, total:roster.length, overtime:inOvertime});
     onValue(ref(db,"rooms/"+code+"/answers/"+r), snap=>{
       const ans = snap.val()||{};
       const answered = roster.filter(u=>ans[u]).length;
-      if(state==="question") renderHostQuestion({round:r, name, prompt, answered, total:roster.length});
+      if(state==="question") renderHostQuestion({round:r, name, prompt, answered, total:roster.length, overtime:inOvertime});
       if(answered>=roster.length && roster.length>0) revealRound(r, ans, name);
     });
   }
@@ -856,8 +906,8 @@ async function runHost(){
                           .sort((a,b)=>(ans[a].at||0)-(ans[b].at||0));
     const bonus = [50,25];
     const pointsByUid = {};
-    correct.forEach((u,i)=> pointsByUid[u] = base + (bonus[i]||0));
-    dbg.info("Scoring round "+(r+1), {name, correct:[...correctSet], exactlyRight:correct.length, base});
+    correct.forEach((u,i)=> pointsByUid[u] = (base + (bonus[i]||0)) * scoreMult);   // 2× during overtime
+    dbg.info("Scoring round "+(r+1), {name, correct:[...correctSet], exactlyRight:correct.length, base, mult:scoreMult});
     // snapshot totals BEFORE the increment write so the scoreboard can count up
     const oldTotals = {};
     roster.forEach(u => oldTotals[u] = players[u]?.score || 0);
@@ -875,7 +925,7 @@ async function runHost(){
         const delta = pointsByUid[u]||0;
         return { name:players[u]?.name||"???", old:oldTotals[u], new:oldTotals[u]+delta, delta };
       }).sort((a,b)=> b.new-a.new || b.delta-a.delta);
-    renderHostReveal({ round:r, name, correctLabels, scoreRows, isLast:r+1>=ROUNDS,
+    renderHostReveal({ round:r, name, correctLabels, scoreRows, isLast:r+1>=ROUNDS, overtime:inOvertime,
       onNext: ()=> r+1>=ROUNDS ? endGame() : (state="question", beginRound(r+1)) });
   }
 
@@ -886,9 +936,32 @@ async function runHost(){
     const ps = snap.val()||{};
     const leaderboard = roster.map(u=>({name:ps[u]?.name||"???", score:ps[u]?.score||0}))
                               .sort((a,b)=>b.score-a.score);
-    renderHostEnded({leaderboard});
+    renderHostEnded({leaderboard, onOvertime:openOvertime});
     playSound("sounds/final.mp3");   // final fanfare
     confettiBurst();                 // confetti only here, at the very end
+  }
+
+  function openOvertime(){
+    let ot = Math.min(3, maxRounds);
+    const draw = () => renderHostOvertimeSetup({
+      rounds:ot, maxRounds,
+      onRounds:(n)=>{ ot = Math.max(1, Math.min(maxRounds, n)); draw(); },
+      onStart: ()=> startOvertime(ot),
+      onBack: ()=> endGame()
+    });
+    draw();
+  }
+
+  function startOvertime(n){
+    inOvertime = true; scoreMult = 2;
+    revealed.clear();                       // allow the new round indices to reveal
+    const startIdx = ROUNDS;                // continue numbering from where we left off
+    candidates = candidates.concat(pickNames(n, candidates));
+    ROUNDS = ROUNDS + n;
+    state = "question";
+    update(roomRef, { "meta/overtime": true, "meta/rounds": ROUNDS });
+    dbg.info("Overtime started", {extraRounds:n, totalRounds:ROUNDS});
+    beginRound(startIdx);
   }
 }
 
@@ -920,6 +993,7 @@ async function runPlayer(code){
   let myName = await freeName();
   let accepted = false, locked = false, lastRound = -1;
   let lastSoundRound = -1, endedOnce = false;
+  let booted = false, roomClosed = false, gameOver = false;
   let picks = new Set();
   try{
     await set(meRef, { name:myName, accepted:false, score:0, joinedAt:serverTimestamp() });
@@ -930,6 +1004,16 @@ async function runPlayer(code){
   }
   onDisconnect(meRef).remove();
 
+  // if the host boots us, our player record disappears → show the funky message
+  onValue(meRef, s=>{
+    if(booted) return;
+    if(!s.exists() && !roomClosed && !gameOver){
+      booted = true;
+      dbg.warn("Booted by host");
+      mount(logo(), $("div",{class:"note"},"Something funky happened. Scan the code again."));
+    }
+  });
+
   const drawLobby = () => renderPhoneLobby({
     name:myName, accepted,
     onRefresh: async ()=>{ myName = await freeName(myName); update(meRef,{name:myName}).catch(e=>dbg.err("Name refresh failed: "+e.message,{code:e.code})); dbg.info("Picked new name", {myName}); drawLobby(); },
@@ -939,10 +1023,14 @@ async function runPlayer(code){
 
   // react to game state
   onValue(ref(db,"rooms/"+code+"/meta"), snap=>{
-    const m = snap.val(); if(!m){ dbg.warn("Room closed by host"); return mount(logo(),$("div",{class:"note"},"The host closed the game.")); }
-    dbg.set("gameState", m.state + (m.round!=null? " r"+m.round : ""));
+    const m = snap.val();
+    if(!m){ roomClosed=true; if(booted) return; dbg.warn("Room closed by host"); return mount(logo(),$("div",{class:"note"},"The host closed the game.")); }
+    if(booted) return;
+    dbg.set("gameState", m.state + (m.round!=null? " r"+m.round : "") + (m.overtime?" OT":""));
+    gameOver = (m.state==="ended");
     if(m.state==="lobby"){ if(!accepted) drawLobby(); return; }
     if(m.state==="question"){
+      endedOnce = false;   // re-arm the final celebration in case this is overtime
       if(m.round!==lastRound){ lastRound=m.round; picks=new Set(); locked=false; }
       drawQuestion(m);
     }
@@ -952,7 +1040,7 @@ async function runPlayer(code){
 
   function drawQuestion(m){
     renderPhoneQuestion({
-      round:m.round, name:m.name, prompt:m.prompt, picks, locked,
+      round:m.round, name:m.name, prompt:m.prompt, picks, locked, overtime:!!m.overtime,
       onToggle:(cat)=>{ if(locked) return; picks.has(cat)?picks.delete(cat):picks.add(cat); drawQuestion(m); },
       onSubmit: async ()=>{
         if(locked) return; locked=true;
@@ -972,7 +1060,7 @@ async function runPlayer(code){
     const rv = m.reveal||{correctLabels:[]};
     const a = (await get(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid))).val()||{};
     const score = (await get(ref(db,"rooms/"+code+"/players/"+uid+"/score"))).val()||0;
-    renderPhoneReveal({ name:rv.name, correctLabels:rv.correctLabels||[], gotIt:!!a.correct, points:a.points||0, total:score });
+    renderPhoneReveal({ name:rv.name, correctLabels:rv.correctLabels||[], gotIt:!!a.correct, points:a.points||0, total:score, overtime:!!m.overtime });
     if(m.round!==lastSoundRound){ lastSoundRound=m.round; playSound(rv.sound); }  // same clip the host chose, once
   }
   async function drawEnded(){
@@ -996,23 +1084,24 @@ function runDemo(kind){
     screens = [
       ()=>renderHostLobby({code:"WXYZ", url:location.origin+location.pathname+"?room=WXYZ",
         players:{a:{name:"Captain Wiggles",accepted:true}, b:{name:"Old Greg",accepted:true}, c:{name:"Susan Doom",accepted:false}},
-        rounds:3, maxRounds:10, onRounds:()=>{}, tip:"Doubles are worth 400 points. Singles are worth 100."}),
+        rounds:3, maxRounds:10, onRounds:()=>{}, onStart:next, onBoot:()=>{}, tip:"Doubles are worth 400 points. Singles are worth 100."}),
       ()=>renderHostQuestion({round:0, name:"Charizard", prompt:"Is your Mom taking this?", answered:2, total:3}),
       ()=>renderHostReveal({round:0, name:"Charizard",
         correctLabels:[["Dragon","dragon"],["Pokémon","poke"]],
         scoreRows:[{name:"Old Greg",old:125,new:575,delta:450},{name:"Captain Wiggles",old:100,new:525,delta:425},{name:"Susan Doom",old:200,new:200,delta:0}],
         isLast:false, onNext:next}),
-      ()=>renderHostQuestion({round:1, name:"Ozempic", prompt:"Any guesses?", answered:1, total:3}),
-      ()=>{ renderHostEnded({leaderboard:[{name:"Old Greg",score:575},{name:"Captain Wiggles",score:525},{name:"Susan Doom",score:200}]}); confettiBurst(); playSound("sounds/final.mp3"); }
+      ()=>renderHostQuestion({round:1, name:"Ozempic", prompt:"Any guesses?", answered:1, total:3, overtime:true}),
+      ()=>{ renderHostEnded({leaderboard:[{name:"Old Greg",score:575},{name:"Captain Wiggles",score:525},{name:"Susan Doom",score:200}], onOvertime:next}); confettiBurst(); playSound("sounds/final.mp3"); },
+      ()=>renderHostOvertimeSetup({rounds:3, maxRounds:10, onRounds:()=>{}, onStart:next, onBack:next})
     ];
   } else {
     screens = [
       ()=>renderPhoneLobby({name:"Baron von Snacc",accepted:false,onRefresh:()=>{},onAccept:next}),
       ()=>renderPhoneLobby({name:"Baron von Snacc",accepted:true}),
-      ()=>{ const p=new Set(["dragon"]); renderPhoneQuestion({round:0,name:"Charizard",prompt:"What is this thing?",picks:p,locked:false,
-        onToggle:(c)=>{p.has(c)?p.delete(c):p.add(c); screens[i]=()=>renderPhoneQuestion({round:0,name:"Charizard",prompt:"What is this thing?",picks:p,locked:false,onToggle:()=>{},onSubmit:next}); screens[i]();},
+      ()=>{ const p=new Set(["dragon"]); renderPhoneQuestion({round:0,name:"Charizard",prompt:"What is this thing?",picks:p,locked:false,overtime:true,
+        onToggle:(c)=>{p.has(c)?p.delete(c):p.add(c); screens[i]=()=>renderPhoneQuestion({round:0,name:"Charizard",prompt:"What is this thing?",picks:p,locked:false,overtime:true,onToggle:()=>{},onSubmit:next}); screens[i]();},
         onSubmit:next}); },
-      ()=>renderPhoneReveal({name:"Charizard",correctLabels:[["Dragon","dragon"],["Pokémon","poke"]],gotIt:true,points:250,total:250}),
+      ()=>renderPhoneReveal({name:"Charizard",correctLabels:[["Dragon","dragon"],["Pokémon","poke"]],gotIt:true,points:250,total:250,overtime:true}),
       ()=>renderPhoneEnded({name:"Baron von Snacc",score:350,place:2,count:3})
     ];
   }
