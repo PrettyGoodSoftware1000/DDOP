@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Drug, Dragon or Pokémon — Biopsy v5
+<!-- Drug, Dragon or Pokémon — Biopsy v6
      Static site for GitHub Pages. Big screen = host (open the bare URL).
      Phones join via ?room=CODE (the QR code points here).
      Needs in the repo root: names.txt, wutdis.txt, tips.txt, and your Firebase config below.
@@ -252,7 +252,7 @@ const firebaseConfig = {
   appId: "1:577951001199:web:f9e7b65e96357edeb0fb9a"
 };
 
-const VERSION = "Biopsy v5";
+const VERSION = "Biopsy v6";
 let ROUNDS = 3;            // host can change this on the launch screen
 const CONFIG_READY = !firebaseConfig.apiKey.startsWith("PASTE");
 
@@ -883,6 +883,7 @@ async function runHost(){
     dbg.info("Round "+(r+1)+" begins", {name, prompt});
     dbg.set("gameState", "question r"+r);
     update(roomRef, { "meta/state":"question", "meta/round":r, "meta/name":name, "meta/prompt":prompt,
+                      "meta/overtime": inOvertime, "meta/rounds": ROUNDS,
                       "meta/roundStartAt":serverTimestamp(), "meta/reveal":null })
       .catch(e=>dbg.err("beginRound write failed: "+e.message,{code:e.code}));
     renderHostQuestion({round:r, name, prompt, answered:0, total:roster.length, overtime:inOvertime});
@@ -955,13 +956,13 @@ async function runHost(){
   function startOvertime(n){
     inOvertime = true; scoreMult = 2;
     revealed.clear();                       // allow the new round indices to reveal
+    roster = Object.keys(players);          // everyone currently in the game carries over
     const startIdx = ROUNDS;                // continue numbering from where we left off
     candidates = candidates.concat(pickNames(n, candidates));
     ROUNDS = ROUNDS + n;
     state = "question";
-    update(roomRef, { "meta/overtime": true, "meta/rounds": ROUNDS });
-    dbg.info("Overtime started", {extraRounds:n, totalRounds:ROUNDS});
-    beginRound(startIdx);
+    dbg.info("Overtime started", {extraRounds:n, totalRounds:ROUNDS, roster:roster.length});
+    beginRound(startIdx);                   // single atomic meta write: ended → question (overtime=true)
   }
 }
 
@@ -1022,10 +1023,12 @@ async function runPlayer(code){
   drawLobby();
 
   // react to game state
+  let renderGen = 0;
   onValue(ref(db,"rooms/"+code+"/meta"), snap=>{
     const m = snap.val();
     if(!m){ roomClosed=true; if(booted) return; dbg.warn("Room closed by host"); return mount(logo(),$("div",{class:"note"},"The host closed the game.")); }
     if(booted) return;
+    const gen = ++renderGen;   // newest event wins; stale async renders bail out
     dbg.set("gameState", m.state + (m.round!=null? " r"+m.round : "") + (m.overtime?" OT":""));
     gameOver = (m.state==="ended");
     if(m.state==="lobby"){ if(!accepted) drawLobby(); return; }
@@ -1034,8 +1037,8 @@ async function runPlayer(code){
       if(m.round!==lastRound){ lastRound=m.round; picks=new Set(); locked=false; }
       drawQuestion(m);
     }
-    if(m.state==="reveal") drawReveal(m);
-    if(m.state==="ended") drawEnded();
+    if(m.state==="reveal") drawReveal(m, gen);
+    if(m.state==="ended") drawEnded(gen);
   });
 
   function drawQuestion(m){
@@ -1056,15 +1059,17 @@ async function runPlayer(code){
       }
     });
   }
-  async function drawReveal(m){
+  async function drawReveal(m, gen){
     const rv = m.reveal||{correctLabels:[]};
     const a = (await get(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid))).val()||{};
     const score = (await get(ref(db,"rooms/"+code+"/players/"+uid+"/score"))).val()||0;
+    if(gen!==renderGen) return;   // a newer meta event already moved us on
     renderPhoneReveal({ name:rv.name, correctLabels:rv.correctLabels||[], gotIt:!!a.correct, points:a.points||0, total:score, overtime:!!m.overtime });
     if(m.round!==lastSoundRound){ lastSoundRound=m.round; playSound(rv.sound); }  // same clip the host chose, once
   }
-  async function drawEnded(){
+  async function drawEnded(gen){
     const ps = (await get(ref(db,"rooms/"+code+"/players"))).val()||{};
+    if(gen!==renderGen) return;   // overtime (or anything) superseded the final screen
     const board = Object.values(ps).sort((a,b)=>(b.score||0)-(a.score||0));
     const me = ps[uid]||{name:myName,score:0};
     const place = board.findIndex(p=>p.name===me.name && p.score===me.score)+1;
