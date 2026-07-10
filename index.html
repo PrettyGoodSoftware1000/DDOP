@@ -6,6 +6,8 @@
      Question data is read live from a public Google Sheet (SHEET_ID constant).
      Optional sounds in root/sounds/: dragon01.mp3, dragon02.mp3 … (also pokemonNN.mp3, drugNN.mp3)
      play on each round reveal; final.mp3 plays on the final scoreboard. All play on host + phones.
+     Optional music in root/music/: drop .mp3/.m4a files there and phones that scan in play them
+     as a shuffled background loop (any filename on GitHub Pages; music01.mp3… elsewhere).
      Preview the look without Firebase: open with ?demo=host or ?demo=phone -->
 <html lang="en">
 <head>
@@ -331,6 +333,73 @@ async function probeAllSounds(){
   dbg.ok("Reveal sounds found", {drug:pools.drug.length, dragon:pools.dragon.length, pokemon:pools.pokemon.length});
   return pools;
 }
+/* ---------- background music (root/music/) ---------- */
+// Phones that scan in play the .mp3/.m4a files in root/music/ as a shuffled loop.
+const MUSIC_EXTS = ["mp3","m4a"];
+
+// On GitHub Pages (owner.github.io/repo/) the repo contents API can list the folder,
+// so any filename works. Returns null when not on Pages or the API call fails.
+async function listMusicViaGitHub(){
+  const host = location.hostname;
+  if(!host.endsWith(".github.io")) return null;
+  const owner = host.slice(0, -".github.io".length);
+  const repo = location.pathname.split("/").filter(Boolean)[0];
+  if(!owner || !repo) return null;
+  const r = await fetch("https://api.github.com/repos/"+owner+"/"+repo+"/contents/music", {cache:"no-store"});
+  if(!r.ok) return null;
+  const items = await r.json();
+  if(!Array.isArray(items)) return null;
+  return items
+    .filter(f=>f.type==="file" && MUSIC_EXTS.includes((f.name.split(".").pop()||"").toLowerCase()))
+    .map(f=>"music/"+encodeURIComponent(f.name));
+}
+
+// fallback for other hosts: music/music01.mp3|m4a, music02… (stops at the first gap, cap 40)
+async function probeMusicNumbered(max=40){
+  const found = [];
+  for(let i=1;i<=max;i++){
+    const base = "music/music"+String(i).padStart(2,"0");
+    let hit = "";
+    for(const ext of MUSIC_EXTS){
+      try{ const r = await fetch(base+"."+ext, {method:"HEAD", cache:"no-store"}); if(r.ok){ hit = base+"."+ext; break; } }
+      catch(_){}
+    }
+    if(!hit) break;
+    found.push(hit);
+  }
+  return found;
+}
+
+async function loadMusicList(){
+  try{
+    const viaApi = await listMusicViaGitHub();
+    if(viaApi){ dbg.ok("Music found via GitHub listing", {tracks:viaApi.length}); return viaApi; }
+  }catch(e){ dbg.warn("GitHub music listing failed: "+e.message); }
+  const probed = await probeMusicNumbered();
+  dbg.ok("Music tracks found by probing", {tracks:probed.length});
+  return probed;
+}
+
+// shuffle the playlist and keep it looping; playback can't start until the first tap,
+// so if audio isn't unlocked yet we wait for the same gestures unlockAudio listens for
+function startMusic(tracks){
+  if(!tracks || !tracks.length) return;
+  const order = shuffle(tracks);
+  let i = 0, started = false;
+  const player = new Audio();
+  player.volume = 0.35;                    // under the reveal/final sound FX
+  const next = () => {
+    player.src = order[i % order.length]; i++;
+    player.play().then(()=>dbg.info("Music playing "+decodeURIComponent(order[(i-1)%order.length])))
+                 .catch(e=>dbg.warn("Music blocked: "+e.message));
+  };
+  player.addEventListener("ended", next);
+  const kick = () => { if(started) return; started = true; next(); };
+  if(audioUnlocked) kick();
+  else ["pointerdown","keydown","touchstart"].forEach(ev =>
+    window.addEventListener(ev, kick, {once:true, passive:true}));
+}
+
 // choose one clip for a revealed card: random category it belongs to, random clip in that pool
 function pickRevealSound(pools, correctSet){
   const cats = [...correctSet].filter(c=>pools[c] && pools[c].length);
@@ -1004,6 +1073,8 @@ async function runPlayer(code){
     return mount(logo(), $("div",{class:"note"},"Couldn't join — open the debug panel for details."));
   }
   onDisconnect(meRef).remove();
+
+  loadMusicList().then(startMusic).catch(e=>dbg.warn("Music setup failed: "+e.message));   // background playlist from root/music/
 
   // if the host boots us, our player record disappears → show the funky message
   onValue(meRef, s=>{
