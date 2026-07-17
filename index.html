@@ -723,14 +723,20 @@ function otEyebrow(round, overtime){
     ? $("div",{class:"eyebrow ot"},`⚡ Overtime · Round ${round+1} of ${ROUNDS} · 2× points`)
     : $("div",{class:"eyebrow"},`Round ${round+1} of ${ROUNDS}`);
 }
-function renderHostQuestion({round, name, prompt, answered, total, overtime}){
+function renderHostQuestion({round, name, prompt, answered, total, overtime, showContinue, countdown, onContinue}){
   const pips = Array.from({length:total},(_,i)=>$("div",{class:"pip"+(i<answered?" on":"")}));
   mount(
     otEyebrow(round, overtime),
     mysteryCard(name, prompt),
     $("div",{class:"panel center"},
       $("div",{class:"count",html:`${answered}/${total} <small>answered</small>`}),
-      $("div",{class:"pips",style:"margin-top:12px"}, ...pips))
+      $("div",{class:"pips",style:"margin-top:12px"}, ...pips)),
+    ...(countdown!=null
+      ? [$("div",{class:"panel center"},
+          $("div",{class:"count",html:`${countdown} <small>continuing in…</small>`}))]
+      : showContinue
+        ? [$("button",{class:"btn overtime-btn", onClick:onContinue},"Continue Countdown ▸")]
+        : [])
   );
 }
 function renderHostReveal({round, name, correctLabels, scoreRows, isLast, overtime, onNext}){
@@ -793,9 +799,12 @@ function renderHostOvertimeSetup({rounds, maxRounds, onRounds, onStart, onBack})
 /* =========================================================================
    PHONE RENDERERS  (the player)
    ========================================================================= */
-function renderPhoneLobby({name, accepted, onRefresh, onAccept}){
+function renderPhoneLobby({name, accepted, confirmed, onRefresh, onAccept}){
   if (accepted){
-    return mount(logo(), nameCard(name), $("div",{class:"note"},"You're in as ",$("b",{},name),". Waiting for the others to accept…"));
+    return mount(logo(), nameCard(name),
+      confirmed
+        ? $("div",{class:"note"},"You're in as ",$("b",{},name),". Waiting for the others to accept…")
+        : $("div",{class:"note"},"Sending your accept to the big screen…"));
   }
   mount(
     logo(),
@@ -909,6 +918,8 @@ async function runHost(){
   let scoreMult = 1;       // 2 during overtime
   let inOvertime = false;
   const revealed = new Set();
+  let qTimers = [];        // question-screen timers (Continue button delay + countdown)
+  const clearQTimers = () => { qTimers.forEach(id=>{ clearTimeout(id); clearInterval(id); }); qTimers=[]; };
 
   // pick n distinct random names, avoiding `used` where possible
   function pickNames(n, used=[]){
@@ -930,8 +941,19 @@ async function runHost(){
     }
   });
 
+  // phones re-send their accept every 10s until this ack lands, so confirm each one back
+  const acceptAcks = new Set();   // uids with an ack write in flight or landed
   onValue(ref(db,"rooms/"+code+"/players"), snap=>{
     players = snap.val()||{};
+    for(const u of acceptAcks) if(!players[u] || !players[u].accepted) acceptAcks.delete(u);
+    for(const [u,p] of Object.entries(players)){
+      if(p.accepted && !p.acceptedAck && !acceptAcks.has(u)){
+        acceptAcks.add(u);
+        update(ref(db,"rooms/"+code+"/players/"+u), {acceptedAck:true})
+          .then(()=>dbg.ok("Confirmed accept", {uid:u, name:p.name}))
+          .catch(e=>{ acceptAcks.delete(u); dbg.err("Accept confirm failed: "+e.message, {code:e.code, uid:u}); });
+      }
+    }
     if(state==="lobby") drawLobby();   // host presses Start to begin (no auto-start)
   });
 
@@ -955,17 +977,41 @@ async function runHost(){
                       "meta/overtime": inOvertime, "meta/rounds": ROUNDS,
                       "meta/roundStartAt":serverTimestamp(), "meta/reveal":null })
       .catch(e=>dbg.err("beginRound write failed: "+e.message,{code:e.code}));
-    renderHostQuestion({round:r, name, prompt, answered:0, total:roster.length, overtime:inOvertime});
+    clearQTimers();
+    let latestAns = {}, lastAnswered = 0;
+    let showContinue = false, countdown = null;
+    const draw = () => renderHostQuestion({
+      round:r, name, prompt, answered:lastAnswered, total:roster.length, overtime:inOvertime,
+      showContinue, countdown, onContinue:startCountdown });
+    // once the word has been up for 15s, offer a way to move on without the stragglers
+    qTimers.push(setTimeout(()=>{
+      if(state==="question" && !revealed.has(r)){ showContinue=true; draw(); }
+    }, 15000));
+    function startCountdown(){
+      if(countdown!=null || revealed.has(r)) return;
+      countdown = 15; draw();
+      dbg.info("Continue countdown started", {round:r+1});
+      const iv = setInterval(()=>{
+        if(state!=="question" || revealed.has(r)){ clearInterval(iv); return; }
+        countdown--;
+        if(countdown<=0){ clearInterval(iv); revealRound(r, latestAns, name); }
+        else draw();
+      }, 1000);
+      qTimers.push(iv);
+    }
+    draw();
     onValue(ref(db,"rooms/"+code+"/answers/"+r), snap=>{
       const ans = snap.val()||{};
-      const answered = roster.filter(u=>ans[u]).length;
-      if(state==="question") renderHostQuestion({round:r, name, prompt, answered, total:roster.length, overtime:inOvertime});
-      if(answered>=roster.length && roster.length>0) revealRound(r, ans, name);
+      latestAns = ans;
+      lastAnswered = roster.filter(u=>ans[u]).length;
+      if(state==="question" && !revealed.has(r)) draw();
+      if(lastAnswered>=roster.length && roster.length>0) revealRound(r, ans, name);
     });
   }
 
   async function revealRound(r, ans, name){
     if(revealed.has(r)) return; revealed.add(r); state="reveal";
+    clearQTimers();
     dbg.set("gameState", "reveal r"+r);
     const correctSet = nameMap.get(name) || new Set();
     const correctLabels = labelsFor(correctSet);
@@ -1061,7 +1107,8 @@ async function runPlayer(code){
   };
 
   let myName = await freeName();
-  let accepted = false, locked = false, lastRound = -1;
+  let accepted = false, acceptConfirmed = false, acceptTimer = null;
+  let locked = false, lastRound = -1;
   let lastSoundRound = -1, endedOnce = false;
   let booted = false, roomClosed = false, gameOver = false;
   let picks = new Set();
@@ -1076,20 +1123,42 @@ async function runPlayer(code){
 
   loadMusicList().then(startMusic).catch(e=>dbg.warn("Music setup failed: "+e.message));   // background playlist from root/music/
 
+  // the accept write is re-sent every 10s until the host screen writes acceptedAck back
+  const sendAccept = () => update(meRef,{accepted:true})
+    .then(()=>dbg.ok("Accept sent — waiting for the big screen to confirm"))
+    .catch(e=>dbg.err("Accept write failed (will retry): "+e.message,{code:e.code}));
+  const stopAcceptResend = () => { if(acceptTimer){ clearInterval(acceptTimer); acceptTimer=null; } };
+
   // if the host boots us, our player record disappears → show the funky message
   onValue(meRef, s=>{
     if(booted) return;
     if(!s.exists() && !roomClosed && !gameOver){
       booted = true;
+      stopAcceptResend();
       dbg.warn("Booted by host");
       mount(logo(), $("div",{class:"note"},"Something funky happened. Scan the code again."));
+      return;
+    }
+    const me = s.val();
+    if(me && me.acceptedAck && !acceptConfirmed){
+      acceptConfirmed = true;
+      stopAcceptResend();
+      dbg.ok("Big screen confirmed the accept");
+      if(!gameOver && lastRound===-1) drawLobby();
     }
   });
 
   const drawLobby = () => renderPhoneLobby({
-    name:myName, accepted,
+    name:myName, accepted, confirmed:acceptConfirmed,
     onRefresh: async ()=>{ myName = await freeName(myName); update(meRef,{name:myName}).catch(e=>dbg.err("Name refresh failed: "+e.message,{code:e.code})); dbg.info("Picked new name", {myName}); drawLobby(); },
-    onAccept: async ()=>{ accepted=true; update(meRef,{accepted:true}).catch(e=>dbg.err("Accept failed: "+e.message,{code:e.code})); dbg.info("Accepted name"); drawLobby(); }
+    onAccept: ()=>{
+      accepted = true;
+      dbg.info("Accepted name");
+      sendAccept();
+      stopAcceptResend();
+      acceptTimer = setInterval(()=>{ if(!acceptConfirmed) sendAccept(); }, 10000);
+      drawLobby();
+    }
   });
   drawLobby();
 
@@ -1102,6 +1171,7 @@ async function runPlayer(code){
     const gen = ++renderGen;   // newest event wins; stale async renders bail out
     dbg.set("gameState", m.state + (m.round!=null? " r"+m.round : "") + (m.overtime?" OT":""));
     gameOver = (m.state==="ended");
+    if(m.state!=="lobby") stopAcceptResend();   // game moved on — the host clearly has us
     if(m.state==="lobby"){ if(!accepted) drawLobby(); return; }
     if(m.state==="question"){
       endedOnce = false;   // re-arm the final celebration in case this is overtime
@@ -1173,7 +1243,7 @@ function runDemo(kind){
   } else {
     screens = [
       ()=>renderPhoneLobby({name:"Baron von Snacc",accepted:false,onRefresh:()=>{},onAccept:next}),
-      ()=>renderPhoneLobby({name:"Baron von Snacc",accepted:true}),
+      ()=>renderPhoneLobby({name:"Baron von Snacc",accepted:true,confirmed:true}),
       ()=>{ const p=new Set(["dragon"]); renderPhoneQuestion({round:0,name:"Charizard",prompt:"What is this thing?",picks:p,locked:false,overtime:true,
         onToggle:(c)=>{p.has(c)?p.delete(c):p.add(c); screens[i]=()=>renderPhoneQuestion({round:0,name:"Charizard",prompt:"What is this thing?",picks:p,locked:false,overtime:true,onToggle:()=>{},onSubmit:next}); screens[i]();},
         onSubmit:next}); },
