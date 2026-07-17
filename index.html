@@ -992,8 +992,27 @@ async function runHost(){
 
   // phones re-send their accept every 10s until this ack lands, so confirm each one back
   const acceptAcks = new Set();   // uids with an ack write in flight or landed
+  const ghostBoots = new Set();   // ghost removals already in flight
   onValue(ref(db,"rooms/"+code+"/players"), snap=>{
     players = snap.val()||{};
+    // one phone = one player: a phone whose anonymous uid changed rejoins as a second
+    // record, but both carry the same deviceId — boot every copy except the newest
+    if(state==="lobby"){
+      const newest = {};   // deviceId -> uid of the record with the latest joinedAt
+      for(const [u,p] of Object.entries(players)){
+        if(!p.deviceId) continue;
+        if(!newest[p.deviceId] || (p.joinedAt||0) > (players[newest[p.deviceId]].joinedAt||0)) newest[p.deviceId] = u;
+      }
+      for(const [u,p] of Object.entries(players)){
+        if(!p.deviceId || newest[p.deviceId]===u) continue;
+        delete players[u];
+        if(ghostBoots.has(u)) continue;
+        ghostBoots.add(u);
+        remove(ref(db,"rooms/"+code+"/players/"+u))
+          .then(()=>{ ghostBoots.delete(u); dbg.info("Removed ghost player", {uid:u, name:p.name}); })
+          .catch(e=>{ ghostBoots.delete(u); dbg.err("Ghost removal failed: "+e.message, {code:e.code, uid:u}); });
+      }
+    }
     for(const u of acceptAcks) if(!players[u] || !players[u].accepted) acceptAcks.delete(u);
     for(const [u,p] of Object.entries(players)){
       if(p.accepted && !p.acceptedAck && !acceptAcks.has(u)){
@@ -1143,23 +1162,24 @@ async function runPlayer(code){
   if(metaSnap.val().state!=="lobby"){ dbg.warn("Game already in progress (state="+metaSnap.val().state+")"); return mount(logo(), $("div",{class:"note"},"This game has already started. Catch the next one!")); }
 
   const names = await loadNames();
-  // identify this phone by a stable device id, NOT the auth uid — anonymous uids can change
-  // between visits (private mode, cleared sessions), which left ghost copies of one phone
-  // in the lobby under different names. Rejoining with the same device id overwrites instead.
-  let pid;
+  // records stay keyed by the auth uid (the DB rules only let a phone write its own
+  // players/<auth uid> path). A stable per-phone device id travels INSIDE the record;
+  // the host uses it to boot ghost copies of the same phone whose anonymous uid changed
+  // between visits (private mode, cleared sessions) — the one-phone-two-names bug.
+  let deviceId;
   try{
-    pid = localStorage.getItem("ddop_device");
-    if(!pid){
-      pid = "d-"+(crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+Math.random().toString(36).slice(2,10));
-      localStorage.setItem("ddop_device", pid);
+    deviceId = localStorage.getItem("ddop_device");
+    if(!deviceId){
+      deviceId = "d-"+(crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+Math.random().toString(36).slice(2,10));
+      localStorage.setItem("ddop_device", deviceId);
     }
-  }catch(_){ pid = uid; }
-  dbg.set("deviceId", pid);
-  const meRef = ref(db,"rooms/"+code+"/players/"+pid);
+  }catch(_){ deviceId = "d-"+uid; }
+  dbg.set("deviceId", deviceId);
+  const meRef = ref(db,"rooms/"+code+"/players/"+uid);
 
   const takenNames = async () => {
     const s = await get(ref(db,"rooms/"+code+"/players"));
-    return new Set(Object.entries(s.val()||{}).filter(([k])=>k!==pid).map(([,v])=>v.name));
+    return new Set(Object.entries(s.val()||{}).filter(([k])=>k!==uid).map(([,v])=>v.name));
   };
   const freeName = async (exclude) => {
     const taken = await takenNames();
@@ -1175,10 +1195,10 @@ async function runPlayer(code){
   let booted = false, roomClosed = false, gameOver = false;
   let picks = new Set();
   try{
-    await set(meRef, { name:myName, accepted:false, score:0, uid, joinedAt:serverTimestamp() });
+    await set(meRef, { name:myName, accepted:false, score:0, deviceId, joinedAt:serverTimestamp() });
     dbg.ok("Joined lobby as "+myName);
   }catch(e){
-    dbg.err("Join write failed (rules?): "+e.message, {code:e.code, path:"players/"+pid});
+    dbg.err("Join write failed (rules?): "+e.message, {code:e.code, path:"players/"+uid});
     return mount(logo(), $("div",{class:"note"},"Couldn't join — open the debug panel for details."));
   }
   onDisconnect(meRef).remove();
@@ -1252,11 +1272,11 @@ async function runPlayer(code){
         if(locked) return; locked=true;
         dbg.info("Submitting answer", {round:m.round, picks:[...picks]});
         try{
-          await set(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+pid), {picks:[...picks], at:serverTimestamp()});
+          await set(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid), {picks:[...picks], at:serverTimestamp()});
           dbg.ok("Answer submitted", {round:m.round});
         }catch(e){
           locked=false; // let them retry
-          dbg.err("Submit write failed (rules?): "+e.message, {code:e.code, path:"answers/"+m.round+"/"+pid});
+          dbg.err("Submit write failed (rules?): "+e.message, {code:e.code, path:"answers/"+m.round+"/"+uid});
         }
         drawQuestion(m);
       }
@@ -1264,8 +1284,8 @@ async function runPlayer(code){
   }
   async function drawReveal(m, gen){
     const rv = m.reveal||{correctLabels:[]};
-    const a = (await get(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+pid))).val()||{};
-    const score = (await get(ref(db,"rooms/"+code+"/players/"+pid+"/score"))).val()||0;
+    const a = (await get(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid))).val()||{};
+    const score = (await get(ref(db,"rooms/"+code+"/players/"+uid+"/score"))).val()||0;
     if(gen!==renderGen) return;   // a newer meta event already moved us on
     renderPhoneReveal({ name:rv.name, correctLabels:rv.correctLabels||[], gotIt:!!a.correct, points:a.points||0, total:score, overtime:!!m.overtime });
     if(m.round!==lastSoundRound){ lastSoundRound=m.round; playSound(rv.sound); }  // same clip the host chose, once
@@ -1274,7 +1294,7 @@ async function runPlayer(code){
     const ps = (await get(ref(db,"rooms/"+code+"/players"))).val()||{};
     if(gen!==renderGen) return;   // overtime (or anything) superseded the final screen
     const board = Object.values(ps).sort((a,b)=>(b.score||0)-(a.score||0));
-    const me = ps[pid]||{name:myName,score:0};
+    const me = ps[uid]||{name:myName,score:0};
     const place = board.findIndex(p=>p.name===me.name && p.score===me.score)+1;
     renderPhoneEnded({ name:me.name, score:me.score||0, place:place||board.length, count:board.length });
     if(!endedOnce){ endedOnce=true; playSound("sounds/final.mp3"); confettiBurst(); }
