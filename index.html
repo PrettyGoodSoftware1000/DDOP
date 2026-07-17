@@ -149,6 +149,18 @@ h1,h2,h3,.display{font-family:'Lilita One',cursive;font-weight:400;letter-spacin
 .pip{width:14px;height:14px;border-radius:50%;background:rgba(255,255,255,.18)}
 .pip.on{background:var(--ok)}
 
+/* question screen: counter + countdown live in a column to the right of the card */
+.side-col{display:flex;flex-direction:column;gap:16px;align-items:center;min-width:220px}
+.continue-btn{font-size:20px;background:linear-gradient(var(--dragon),var(--dragon2))}
+
+/* phone audio toggles (music + sound fx) */
+.av-controls{position:fixed;top:calc(env(safe-area-inset-top,0px) + 12px);right:12px;display:flex;gap:10px;z-index:70}
+.av-btn{width:46px;height:46px;border-radius:50%;border:1px solid rgba(255,255,255,.22);cursor:pointer;
+  background:rgba(255,255,255,.12);font-size:20px;display:grid;place-items:center;box-shadow:0 4px 0 rgba(0,0,0,.25);
+  transition:transform .08s,opacity .15s,filter .15s}
+.av-btn:active{transform:translateY(2px);box-shadow:0 2px 0 rgba(0,0,0,.25)}
+.av-btn.off{opacity:.45;filter:grayscale(1)}
+
 /* reveal labels */
 .answer-tags{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
 .tag{font-family:'Lilita One';padding:10px 18px;border-radius:12px;font-size:20px;color:#fff;box-shadow:0 5px 0 rgba(0,0,0,.25)}
@@ -175,6 +187,8 @@ h1,h2,h3,.display{font-family:'Lilita One',cursive;font-weight:400;letter-spacin
 .scoreboard .right{margin-left:auto;display:flex;align-items:center;gap:12px}
 .scoreboard .right .pts{margin-left:0;min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
 .scoreboard .delta{font-family:'Lilita One';color:var(--ok);font-size:16px}
+.scoreboard .pname.good{color:var(--ok)}
+.scoreboard .pname.bad{color:var(--poke)}
 
 /* rounds stepper on the launch screen */
 .rounds{display:flex;align-items:center;justify-content:center;gap:14px}
@@ -306,15 +320,22 @@ function unlockAudio(){ audioUnlocked = true; }
 ["pointerdown","keydown","touchstart"].forEach(ev =>
   window.addEventListener(ev, unlockAudio, {once:true, passive:true}));
 
+// user-controlled toggles (phone buttons); remembered across visits
+const prefGet = (k,def) => { try{ return localStorage.getItem(k) ?? def; }catch(_){ return def; } };
+const prefSet = (k,v) => { try{ localStorage.setItem(k,v); }catch(_){} };
+let musicEnabled = prefGet("ddop_music","on") !== "off";
+let sfxEnabled   = prefGet("ddop_sfx","on")   !== "off";
+
 // play an mp3 by path (e.g. "sounds/dragon03.mp3"); phones play at half volume
 function playSound(path){
-  if(!path) return;
+  if(!path || !sfxEnabled) return;
   try{
     const a = new Audio(path); a.volume = isPhone ? 0.475 : 0.95;
     a.play().then(()=>dbg.info("Playing "+path))
             .catch(e=>dbg.warn("Sound blocked or missing: "+path+" ("+e.message+")"));
   }catch(e){ dbg.warn("Sound error "+path+": "+e.message); }
 }
+function setSfxEnabled(on){ sfxEnabled = on; prefSet("ddop_sfx", on?"on":"off"); dbg.info("Sound FX "+(on?"on":"off")); }
 
 // discover numbered files sounds/<cat>01.mp3, <cat>02.mp3 … (stops at the first gap, cap 40)
 async function probeSounds(cat, max=40){
@@ -382,11 +403,12 @@ async function loadMusicList(){
 
 // shuffle the playlist and keep it looping; playback can't start until the first tap,
 // so if audio isn't unlocked yet we wait for the same gestures unlockAudio listens for
+let musicPlayer = null, musicStarted = false, musicKick = null;
 function startMusic(tracks){
   if(!tracks || !tracks.length) return;
   const order = shuffle(tracks);
-  let i = 0, started = false;
-  const player = new Audio();
+  let i = 0;
+  const player = new Audio(); musicPlayer = player;
   player.volume = 0.35;                    // under the reveal/final sound FX
   const next = () => {
     player.src = order[i % order.length]; i++;
@@ -394,10 +416,35 @@ function startMusic(tracks){
                  .catch(e=>dbg.warn("Music blocked: "+e.message));
   };
   player.addEventListener("ended", next);
-  const kick = () => { if(started) return; started = true; next(); };
+  const kick = () => { if(musicStarted || !musicEnabled) return; musicStarted = true; next(); };
+  musicKick = kick;
   if(audioUnlocked) kick();
   else ["pointerdown","keydown","touchstart"].forEach(ev =>
     window.addEventListener(ev, kick, {once:true, passive:true}));
+}
+function setMusicEnabled(on){
+  musicEnabled = on; prefSet("ddop_music", on?"on":"off"); dbg.info("Music "+(on?"on":"off"));
+  if(!musicPlayer) return;
+  if(!on){ musicPlayer.pause(); return; }
+  if(musicStarted) musicPlayer.play().catch(e=>dbg.warn("Music resume blocked: "+e.message));
+  else if(musicKick) musicKick();   // was muted before the first track ever started
+}
+
+// the 🎵 / 🔊 buttons pinned to the top-right of every phone screen
+function mountAvControls(){
+  if(document.getElementById("avctl")) return;
+  const mBtn = $("button",{class:"av-btn"+(musicEnabled?"":" off"),"aria-label":"Toggle music","aria-pressed":musicEnabled?"true":"false"},"🎵");
+  const sBtn = $("button",{class:"av-btn"+(sfxEnabled?"":" off"),"aria-label":"Toggle sound effects","aria-pressed":sfxEnabled?"true":"false"}, sfxEnabled?"🔊":"🔇");
+  mBtn.addEventListener("click", ()=>{
+    setMusicEnabled(!musicEnabled);
+    mBtn.classList.toggle("off", !musicEnabled); mBtn.setAttribute("aria-pressed", musicEnabled?"true":"false");
+  });
+  sBtn.addEventListener("click", ()=>{
+    setSfxEnabled(!sfxEnabled);
+    sBtn.textContent = sfxEnabled ? "🔊" : "🔇";
+    sBtn.classList.toggle("off", !sfxEnabled); sBtn.setAttribute("aria-pressed", sfxEnabled?"true":"false");
+  });
+  document.body.appendChild($("div",{id:"avctl",class:"av-controls"}, mBtn, sBtn));
 }
 
 // choose one clip for a revealed card: random category it belongs to, random clip in that pool
@@ -727,16 +774,18 @@ function renderHostQuestion({round, name, prompt, answered, total, overtime, sho
   const pips = Array.from({length:total},(_,i)=>$("div",{class:"pip"+(i<answered?" on":"")}));
   mount(
     otEyebrow(round, overtime),
-    mysteryCard(name, prompt),
-    $("div",{class:"panel center"},
-      $("div",{class:"count",html:`${answered}/${total} <small>answered</small>`}),
-      $("div",{class:"pips",style:"margin-top:12px"}, ...pips)),
-    ...(countdown!=null
-      ? [$("div",{class:"panel center"},
-          $("div",{class:"count",html:`${countdown} <small>continuing in…</small>`}))]
-      : showContinue
-        ? [$("button",{class:"btn overtime-btn", onClick:onContinue},"Continue Countdown ▸")]
-        : [])
+    $("div",{class:"host-grid"},
+      mysteryCard(name, prompt),
+      $("div",{class:"side-col"},
+        $("div",{class:"panel center"},
+          $("div",{class:"count",html:`${answered}/${total} <small>answered</small>`}),
+          $("div",{class:"pips",style:"margin-top:12px"}, ...pips)),
+        ...(countdown!=null
+          ? [$("div",{class:"panel center"},
+              $("div",{class:"count",html:`${countdown} <small>continuing in…</small>`}))]
+          : showContinue
+            ? [$("button",{class:"btn continue-btn", onClick:onContinue},"Continue Countdown ▸")]
+            : [])))
   );
 }
 function renderHostReveal({round, name, correctLabels, scoreRows, isLast, overtime, onNext}){
@@ -748,7 +797,7 @@ function renderHostReveal({round, name, correctLabels, scoreRows, isLast, overti
         tasks.push(()=>animateCount(num, p.old, p.new));
         return $("div",{class:"row"+(i===0?" first":"")},
           $("span",{class:"rank"}, i===0?"🏆":String(i+1)),
-          $("span",{class:"pname"}, p.name),
+          $("span",{class:"pname "+(p.delta>0?"good":"bad")}, p.name),
           $("span",{class:"right"},
             ...(p.delta>0 ? [$("span",{class:"delta"}, "+"+p.delta)] : []),
             num));
@@ -1085,6 +1134,7 @@ async function runHost(){
 async function runPlayer(code){
   loading("Connecting to game…");
   isPhone = true;
+  mountAvControls();
   dbg.set("mode","PLAYER"); dbg.set("room", code);
   await initFirebase();
   const roomRef = ref(db,"rooms/"+code);
@@ -1093,11 +1143,23 @@ async function runPlayer(code){
   if(metaSnap.val().state!=="lobby"){ dbg.warn("Game already in progress (state="+metaSnap.val().state+")"); return mount(logo(), $("div",{class:"note"},"This game has already started. Catch the next one!")); }
 
   const names = await loadNames();
-  const meRef = ref(db,"rooms/"+code+"/players/"+uid);
+  // identify this phone by a stable device id, NOT the auth uid — anonymous uids can change
+  // between visits (private mode, cleared sessions), which left ghost copies of one phone
+  // in the lobby under different names. Rejoining with the same device id overwrites instead.
+  let pid;
+  try{
+    pid = localStorage.getItem("ddop_device");
+    if(!pid){
+      pid = "d-"+(crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+Math.random().toString(36).slice(2,10));
+      localStorage.setItem("ddop_device", pid);
+    }
+  }catch(_){ pid = uid; }
+  dbg.set("deviceId", pid);
+  const meRef = ref(db,"rooms/"+code+"/players/"+pid);
 
   const takenNames = async () => {
     const s = await get(ref(db,"rooms/"+code+"/players"));
-    return new Set(Object.entries(s.val()||{}).filter(([k])=>k!==uid).map(([,v])=>v.name));
+    return new Set(Object.entries(s.val()||{}).filter(([k])=>k!==pid).map(([,v])=>v.name));
   };
   const freeName = async (exclude) => {
     const taken = await takenNames();
@@ -1113,10 +1175,10 @@ async function runPlayer(code){
   let booted = false, roomClosed = false, gameOver = false;
   let picks = new Set();
   try{
-    await set(meRef, { name:myName, accepted:false, score:0, joinedAt:serverTimestamp() });
+    await set(meRef, { name:myName, accepted:false, score:0, uid, joinedAt:serverTimestamp() });
     dbg.ok("Joined lobby as "+myName);
   }catch(e){
-    dbg.err("Join write failed (rules?): "+e.message, {code:e.code, path:"players/"+uid});
+    dbg.err("Join write failed (rules?): "+e.message, {code:e.code, path:"players/"+pid});
     return mount(logo(), $("div",{class:"note"},"Couldn't join — open the debug panel for details."));
   }
   onDisconnect(meRef).remove();
@@ -1190,11 +1252,11 @@ async function runPlayer(code){
         if(locked) return; locked=true;
         dbg.info("Submitting answer", {round:m.round, picks:[...picks]});
         try{
-          await set(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid), {picks:[...picks], at:serverTimestamp()});
+          await set(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+pid), {picks:[...picks], at:serverTimestamp()});
           dbg.ok("Answer submitted", {round:m.round});
         }catch(e){
           locked=false; // let them retry
-          dbg.err("Submit write failed (rules?): "+e.message, {code:e.code, path:"answers/"+m.round+"/"+uid});
+          dbg.err("Submit write failed (rules?): "+e.message, {code:e.code, path:"answers/"+m.round+"/"+pid});
         }
         drawQuestion(m);
       }
@@ -1202,8 +1264,8 @@ async function runPlayer(code){
   }
   async function drawReveal(m, gen){
     const rv = m.reveal||{correctLabels:[]};
-    const a = (await get(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+uid))).val()||{};
-    const score = (await get(ref(db,"rooms/"+code+"/players/"+uid+"/score"))).val()||0;
+    const a = (await get(ref(db,"rooms/"+code+"/answers/"+m.round+"/"+pid))).val()||{};
+    const score = (await get(ref(db,"rooms/"+code+"/players/"+pid+"/score"))).val()||0;
     if(gen!==renderGen) return;   // a newer meta event already moved us on
     renderPhoneReveal({ name:rv.name, correctLabels:rv.correctLabels||[], gotIt:!!a.correct, points:a.points||0, total:score, overtime:!!m.overtime });
     if(m.round!==lastSoundRound){ lastSoundRound=m.round; playSound(rv.sound); }  // same clip the host chose, once
@@ -1212,7 +1274,7 @@ async function runPlayer(code){
     const ps = (await get(ref(db,"rooms/"+code+"/players"))).val()||{};
     if(gen!==renderGen) return;   // overtime (or anything) superseded the final screen
     const board = Object.values(ps).sort((a,b)=>(b.score||0)-(a.score||0));
-    const me = ps[uid]||{name:myName,score:0};
+    const me = ps[pid]||{name:myName,score:0};
     const place = board.findIndex(p=>p.name===me.name && p.score===me.score)+1;
     renderPhoneEnded({ name:me.name, score:me.score||0, place:place||board.length, count:board.length });
     if(!endedOnce){ endedOnce=true; playSound("sounds/final.mp3"); confettiBurst(); }
@@ -1223,7 +1285,7 @@ async function runPlayer(code){
    DEMO MODE — preview every screen without Firebase  (?demo=host | ?demo=phone)
    ========================================================================= */
 function runDemo(kind){
-  if(kind==="phone") isPhone = true;
+  if(kind==="phone"){ isPhone = true; mountAvControls(); }
   const bar = document.getElementById("demobar"); bar.classList.remove("hidden");
   let i = 0; let screens;
   if(kind==="host"){
